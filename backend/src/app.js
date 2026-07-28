@@ -17,6 +17,9 @@ const app = express();
 
 connectDB();
 
+// Trust proxy for secure cookies behind Nginx reverse proxy
+app.set('trust proxy', 1);
+
 app.use(helmet());
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5174';

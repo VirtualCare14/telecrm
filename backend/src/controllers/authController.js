@@ -55,11 +55,12 @@ exports.login = async (req, res, next) => {
     user.lastLoginAt = new Date();
     await user.save();
 
+    const isSecure = (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production';
     const cookieOptions = {
       httpOnly: true,
       maxAge: refreshTtl,
-      sameSite: process.env.COOKIE_SAMESITE || 'lax',
-      secure: (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production',
+      sameSite: isSecure ? 'none' : 'lax',
+      secure: isSecure,
       path: '/',
     };
 
@@ -67,8 +68,8 @@ exports.login = async (req, res, next) => {
     const accessCookieOptions = {
       httpOnly: true,
       maxAge: ttl,
-      sameSite: process.env.COOKIE_SAMESITE || 'lax',
-      secure: (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production',
+      sameSite: isSecure ? 'none' : 'lax',
+      secure: isSecure,
       path: '/',
     };
     res.cookie('accessToken', token, accessCookieOptions);
@@ -124,11 +125,12 @@ exports.refresh = async (req, res, next) => {
     const payload = { sub: user._id.toString(), role: user.role, sid: session._id.toString() };
     const token = jwt.sign(payload, process.env.JWT_SECRET || 'changeme', { expiresIn: jwtExpires });
 
+    const isSecure = (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production';
     const cookieOptions = {
       httpOnly: true,
       maxAge: refreshTtl,
-      sameSite: process.env.COOKIE_SAMESITE || 'lax',
-      secure: (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production',
+      sameSite: isSecure ? 'none' : 'lax',
+      secure: isSecure,
       path: '/',
     };
     res.cookie('refreshToken', newRefresh, cookieOptions);
@@ -136,8 +138,8 @@ exports.refresh = async (req, res, next) => {
     const accessCookieOptions = {
       httpOnly: true,
       maxAge: ttl,
-      sameSite: process.env.COOKIE_SAMESITE || 'lax',
-      secure: (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production',
+      sameSite: isSecure ? 'none' : 'lax',
+      secure: isSecure,
       path: '/',
     };
     res.cookie('accessToken', token, accessCookieOptions);
