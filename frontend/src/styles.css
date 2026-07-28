@@ -1,0 +1,171 @@
+body {
+  font-family: Roboto, Arial, sans-serif;
+  margin: 0;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 10px;
+  transition: background 0.3s;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Animation keyframes */
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Apply animations to MUI components */
+.MuiPaper-root {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+.MuiTableRow-root {
+  animation: fadeIn 0.2s ease-in-out;
+}
+
+/* Better focus styles */
+.MuiButton-root:focus-visible,
+.MuiIconButton-root:focus-visible {
+  outline: 2px solid #1976d2;
+  outline-offset: 2px;
+}
+
+/* Smooth transitions for all interactive elements */
+.MuiButton-root,
+.MuiIconButton-root,
+.MuiListItemButton-root {
+  transition: all 0.2s ease-in-out;
+}
+
+/* Better text rendering */
+.MuiTypography-root {
+  text-rendering: optimizeLegibility;
+}
+
+/* Gradient text utility class */
+.gradient-text {
+  background: linear-gradient(135deg, #1a1f36 0%, #2d3561 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Card hover effect */
+.hover-card {
+  transition: all 0.3s ease;
+}
+
+.hover-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+/* Loading skeleton animation */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.MuiSkeleton-root {
+  animation: shimmer 2s infinite;
+  background: linear-gradient(
+    90deg,
+    #f0f0f0 25%,
+    #e0e0e0 50%,
+    #f0f0f0 75%
+  );
+  background-size: 1000px 100%;
+}
+
+/* Better input focus */
+.MuiOutlinedInput-root {
+  transition: all 0.2s ease;
+}
+
+.MuiOutlinedInput-root:focus-within {
+  transform: translateY(-1px);
+}
+
+/* Table row hover effect */
+.MuiTableRow-root:hover {
+  transition: background-color 0.2s ease;
+}
+
+/* Dialog animation */
+.MuiDialog-paper {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+/* Chip hover effect */
+.MuiChip-root {
+  transition: all 0.2s ease;
+}
+
+.MuiChip-root:hover {
+  transform: scale(1.05);
+}
+
+/* Tab indicator animation */
+.MuiTabs-indicator {
+  transition: all 0.3s ease;
+}
+
+/* Avatar hover effect */
+.MuiAvatar-root {
+  transition: transform 0.2s ease;
+}
+
+.MuiAvatar-root:hover {
+  transform: scale(1.1);
+}
