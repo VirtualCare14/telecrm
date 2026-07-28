@@ -25,13 +25,25 @@ app.use(helmet());
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5174';
 const additionalOrigins = ['http://localhost:5173', 'http://localhost:5174', 'https://orangevc.in'];
 const corsOrigins = FRONTEND_URL ? [FRONTEND_URL, ...additionalOrigins] : additionalOrigins;
-app.use(cors({ origin: (origin, callback) => {
-  if (!origin || corsOrigins.includes(origin)) {
-    callback(null, true);
-  } else {
-    callback(new Error('CORS origin not allowed'));
-  }
-}, credentials: true }));
+
+// Allow all origins in development mode
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
+app.use(cors({ 
+  origin: (origin, callback) => {
+    // Allow all origins in development
+    if (isDevelopment) {
+      return callback(null, true);
+    }
+    // In production, check against allowed list
+    if (!origin || corsOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS origin not allowed'));
+    }
+  }, 
+  credentials: true 
+}));
 
 app.use(cookieParser());
 app.use(express.json());
