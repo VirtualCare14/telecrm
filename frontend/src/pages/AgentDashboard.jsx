@@ -122,11 +122,11 @@ export default function AgentDashboard() {
       {/* KPI Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {[
-          { title: 'My Leads', value: kpis?.totalLeads, icon: <Business />, color: '#1976d2', onClick: () => navigateToLeads({}) },
-          { title: 'Upcoming Follow-ups', value: kpis?.upcomingFollowups, icon: <CalendarMonth />, color: '#388e3c', onClick: () => navigateToLeads({ followUpType: 'upcoming' }) },
-          { title: 'Overdue Follow-ups', value: kpis?.overdueFollowups, icon: <Warning />, color: '#f57c00', onClick: () => navigateToLeads({ followUpType: 'overdue' }) },
-          { title: 'Won Leads', value: kpis?.totalWon, icon: <CheckCircle />, color: '#2e7d32', onClick: () => navigateToLeads({ closureStatus: 'WON' }) },
-          { title: 'Lost Leads', value: kpis?.totalLost, icon: <Cancel />, color: '#d32f2f', onClick: () => navigateToLeads({ closureStatus: 'LOST' }) }
+          { title: 'My Leads', value: kpis?.totalLeads, icon: <Business />, color: '#facc15', onClick: () => navigateToLeads({}) },
+          { title: 'Upcoming Follow-ups', value: kpis?.upcomingFollowups, icon: <CalendarMonth />, color: '#38bdf8', onClick: () => navigateToLeads({ followUpType: 'upcoming' }) },
+          { title: 'Overdue Follow-ups', value: kpis?.overdueFollowups, icon: <Warning />, color: '#f97316', onClick: () => navigateToLeads({ followUpType: 'overdue' }) },
+          { title: 'Won Leads', value: kpis?.totalWon, icon: <CheckCircle />, color: '#10b981', onClick: () => navigateToLeads({ closureStatus: 'WON' }) },
+          { title: 'Lost Leads', value: kpis?.totalLost, icon: <Cancel />, color: '#ef4444', onClick: () => navigateToLeads({ closureStatus: 'LOST' }) }
         ].map((kpi, idx) => (
           <Grid item xs={12} sm={6} md={4} key={idx}>
             <Paper
