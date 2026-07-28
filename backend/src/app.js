@@ -23,7 +23,7 @@ app.set('trust proxy', 1);
 app.use(helmet());
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5174';
-const additionalOrigins = ['https://orangevc.in'];
+const additionalOrigins = ['http://localhost:5173', 'http://localhost:5174', 'https://orangevc.in'];
 const corsOrigins = FRONTEND_URL ? [FRONTEND_URL, ...additionalOrigins] : additionalOrigins;
 app.use(cors({ origin: (origin, callback) => {
   if (!origin || corsOrigins.includes(origin)) {
