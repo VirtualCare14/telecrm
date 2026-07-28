@@ -11,8 +11,10 @@ import {
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
-import { getLead, listCallLogs, createCallLog, listActivities, closeWon, closeLost, updateLead } from '../services/leadsService';
-import { getLeadContacts, addContact, setPrimaryContact, updateContact } from '../services/leadsService';
+import { 
+  getLead, listCallLogs, createCallLog, listActivities, closeWon, closeLost, updateLead,
+  getLeadContacts, addContact, setPrimaryContact, updateContact 
+} from '../services/leadsService';
 import { getActiveAgents } from '../services/agentService';
 import { requestTransfer } from '../services/transferService';
 import { formatDateTime } from '../utils/dateHelpers';
@@ -50,6 +52,11 @@ export default function LeadDetails() {
   const [contactData, setContactData] = useState({
     name: '', designation: '', phone: '', altPhone: '', email: '', setAsPrimary: false,
   });
+
+  // Edit Contact
+  const [editContactOpen, setEditContactOpen] = useState(false);
+  const [editContactData, setEditContactData] = useState({ id: '', name: '', designation: '', phone: '', altPhone: '', email: '' });
+  const [editContactError, setEditContactError] = useState(null);
 
   // Close Lead
   const [closeOpen, setCloseOpen] = useState(false);
@@ -172,6 +179,32 @@ export default function LeadDetails() {
       await refresh();
     } catch (err) {
       setError(err.response?.data?.message || 'Unable to set primary contact');
+    }
+  };
+
+  // Edit Contact
+  const handleOpenEditContact = (c) => {
+    setEditContactData({ id: c._id, name: c.name || '', designation: c.designation || '', phone: c.phone || '', altPhone: c.altPhone || '', email: c.email || '' });
+    setEditContactError(null);
+    setEditContactOpen(true);
+  };
+
+  const handleEditContactChange = (f) => (e) => setEditContactData((p) => ({ ...p, [f]: e.target.value }));
+
+  const handleSaveEditContact = async () => {
+    setEditContactError(null);
+    try {
+      await updateContact(id, editContactData.id, {
+        name: editContactData.name,
+        designation: editContactData.designation,
+        phone: editContactData.phone,
+        altPhone: editContactData.altPhone,
+        email: editContactData.email,
+      });
+      setEditContactOpen(false);
+      await refresh();
+    } catch (err) {
+      setEditContactError(err.response?.data?.message || 'Unable to update contact');
     }
   };
 
@@ -480,8 +513,17 @@ export default function LeadDetails() {
                     <Typography variant="body2" sx={{ mt: 0.5 }}>📞 {c.phone}</Typography>
                     {c.altPhone && <Typography variant="body2">📞 {c.altPhone}</Typography>}
                     {c.email && <Typography variant="body2">✉️ {c.email}</Typography>}
-                    {canEdit && !c.isPrimary && (
-                      <Button size="small" variant="text" sx={{ mt: 1 }} onClick={() => handleSetPrimary(c._id)}>Set as Primary</Button>
+                    {canEdit && (
+                      <Box sx={{ mt: 1, display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                        <Button size="small" variant="text" color="primary" onClick={() => handleOpenEditContact(c)} sx={{ fontSize: 11 }}>
+                          <Edit fontSize="small" sx={{ mr: 0.3 }} /> Edit
+                        </Button>
+                        {!c.isPrimary && (
+                          <Button size="small" variant="text" color="success" onClick={() => handleSetPrimary(c._id)} sx={{ fontSize: 11 }}>
+                            Set as Primary
+                          </Button>
+                        )}
+                      </Box>
                     )}
                   </Paper>
                 </Grid>
@@ -731,6 +773,38 @@ export default function LeadDetails() {
           >
             Close as {closeMode === 'won' ? 'Won' : 'Lost'}
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Edit Contact Dialog */}
+      <Dialog open={editContactOpen} onClose={() => setEditContactOpen(false)} maxWidth="sm" fullWidth>
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Edit /> Edit Contact Person
+          <IconButton sx={{ ml: 'auto' }} onClick={() => setEditContactOpen(false)}><Close /></IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {editContactError && <Alert severity="error" sx={{ mb: 2 }}>{editContactError}</Alert>}
+          <Grid container spacing={2} sx={{ mt: 1 }}>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth required label="Full Name" value={editContactData.name} onChange={handleEditContactChange('name')} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth label="Designation" value={editContactData.designation} onChange={handleEditContactChange('designation')} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth required label="Phone Number" value={editContactData.phone} onChange={handleEditContactChange('phone')} />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField fullWidth label="Alternate Phone" value={editContactData.altPhone} onChange={handleEditContactChange('altPhone')} />
+            </Grid>
+            <Grid item xs={12}>
+              <TextField fullWidth label="Email" value={editContactData.email} onChange={handleEditContactChange('email')} />
+            </Grid>
+          </Grid>
+        </DialogContent>
+        <DialogActions sx={{ p: 2 }}>
+          <Button onClick={() => setEditContactOpen(false)} sx={{ borderRadius: 2, textTransform: 'none' }}>Cancel</Button>
+          <Button variant="contained" onClick={handleSaveEditContact} sx={{ borderRadius: 2, textTransform: 'none' }}>Save Changes</Button>
         </DialogActions>
       </Dialog>
 

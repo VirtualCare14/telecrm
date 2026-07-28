@@ -189,8 +189,20 @@ exports.getLead = async (req, res, next) => {
       .populate('closedBy', 'fullName email username')
       .lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    if (req.userRole === 'AGENT' && lead.currentOwner._id.toString() !== req.userId) {
+    // Check with safer null check
+    if (req.userRole === 'AGENT' && (!lead.currentOwner || lead.currentOwner._id?.toString() !== req.userId)) {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+    // Simplify owner/creator to just names for frontend
+    if (lead.currentOwner && typeof lead.currentOwner === 'object') {
+      lead.currentOwnerName = lead.currentOwner.fullName || lead.currentOwner.username || 'Unassigned';
+    } else {
+      lead.currentOwnerName = 'Unassigned';
+    }
+    if (lead.createdBy && typeof lead.createdBy === 'object') {
+      lead.createdByName = lead.createdBy.fullName || lead.createdBy.username || 'Unknown';
+    } else {
+      lead.createdByName = 'Unknown';
     }
     res.json({ lead });
   } catch (err) {
