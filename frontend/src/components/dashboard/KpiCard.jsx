@@ -12,6 +12,7 @@ export default function KpiCard({ title, value, icon, color, onClick, loading })
         borderColor: 'divider',
         cursor: onClick ? 'pointer' : 'default',
         transition: 'all 0.2s',
+        bgcolor: color || 'background.paper',
         '&:hover': onClick ? {
           transform: 'translateY(-2px)',
           boxShadow: 3,
