@@ -7,6 +7,11 @@ const userSchema = new mongoose.Schema({
   phone: { type: String },
   passwordHash: { type: String, required: true },
   role: { type: String, enum: ['ADMIN', 'AGENT'], default: 'AGENT' },
+  agentRole: { 
+    type: String, 
+    trim: true,
+    default: 'Calling Agent' 
+  },
   active: { type: Boolean, default: true },
   lastLoginAt: { type: Date },
 }, { timestamps: true });

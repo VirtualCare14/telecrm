@@ -1,7 +1,7 @@
 import api from './api';
 
-export async function getAgents() {
-  const res = await api.get('/agents');
+export async function getAgents(params) {
+  const res = await api.get('/agents', { params });
   return res.data.agents;
 }
 

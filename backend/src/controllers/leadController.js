@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 const Lead = require('../models/Lead');
 const ContactPerson = require('../models/ContactPerson');
 const LeadActivity = require('../models/LeadActivity');
+const User = require('../models/User');
+const CallLog = require('../models/CallLog');
 const { getNextSequence, formatLeadNumber } = require('../services/counterService');
 
 exports.createLead = async (req, res, next) => {
@@ -20,7 +22,8 @@ exports.createLead = async (req, res, next) => {
     const leadNumber = formatLeadNumber(seq);
 
     // Admin can assign lead to another agent; otherwise assign to self
-    const ownerId = req.userRole === 'ADMIN' && currentOwner ? currentOwner : req.userId;
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    const ownerId = isAdmin && currentOwner ? currentOwner : req.userId;
 
     const lead = await Lead.create([{
       leadNumber, organizationName, industry, organizationType, address,
@@ -99,10 +102,32 @@ exports.listLeads = async (req, res, next) => {
     const search = (req.query.search || '').trim();
 
     const filter = {};
-    if (req.userRole === 'AGENT') {
+    const ownerParam = req.query.owner || req.query.agentId || req.query.agent;
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin) {
       filter.currentOwner = req.userId;
-    } else if (req.query.owner) {
-      filter.currentOwner = req.query.owner;
+    } else if (req.query.unassigned === 'true' || ownerParam === 'unassigned') {
+      const activeAgents = await User.find({ role: 'AGENT', active: true }).select('_id');
+      const activeAgentIds = activeAgents.map((a) => a._id);
+      filter.currentOwner = { $nin: activeAgentIds };
+    } else if (ownerParam) {
+      if (mongoose.Types.ObjectId.isValid(ownerParam)) {
+        filter.currentOwner = new mongoose.Types.ObjectId(ownerParam);
+      } else {
+        const matchedAgent = await User.findOne({
+          role: 'AGENT',
+          $or: [
+            { fullName: new RegExp(`^${ownerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+            { username: new RegExp(`^${ownerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+            { email: new RegExp(`^${ownerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+          ],
+        }).select('_id');
+        if (matchedAgent) {
+          filter.currentOwner = matchedAgent._id;
+        } else {
+          filter.currentOwner = ownerParam;
+        }
+      }
     }
 
     // Date filter
@@ -124,8 +149,9 @@ exports.listLeads = async (req, res, next) => {
     // Follow-up filter
     if (req.query.followUpType === 'upcoming') {
       filter.nextFollowUpAt = { $gte: new Date() };
+      filter.closureStatus = 'OPEN';
     } else if (req.query.followUpType === 'overdue') {
-      filter.nextFollowUpAt = { $lt: new Date() };
+      filter.nextFollowUpAt = { $lt: new Date(), $gt: new Date(0) };
       filter.closureStatus = 'OPEN';
     }
 
@@ -189,9 +215,9 @@ exports.getLead = async (req, res, next) => {
       .populate('closedBy', 'fullName email username')
       .lean();
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    // Check with safer null check
-    if (req.userRole === 'AGENT' && (!lead.currentOwner || lead.currentOwner._id?.toString() !== req.userId)) {
-      return res.status(403).json({ message: 'Forbidden' });
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && (!lead.currentOwner || (lead.currentOwner._id?.toString() !== req.userId && lead.currentOwner.toString() !== req.userId))) {
+      return res.status(403).json({ message: 'Forbidden: You do not have access to this lead' });
     }
     // Simplify owner/creator to just names for frontend
     if (lead.currentOwner && typeof lead.currentOwner === 'object') {
@@ -223,7 +249,8 @@ exports.updateLead = async (req, res, next) => {
       session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner.toString() !== req.userId) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
@@ -273,12 +300,8 @@ exports.closeWon = async (req, res, next) => {
   session.startTransaction();
   try {
     const leadId = req.params.id;
-    const { closingRemark, dealValue, product } = req.body;
-    if (!closingRemark) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: 'closingRemark is required for closing as Won' });
-    }
+    const { closingRemark: rawRemark, remark: altRemark, dealValue, product } = req.body;
+    const closingRemark = (rawRemark || altRemark || '').trim();
 
     const lead = await Lead.findById(leadId).session(session);
     if (!lead) {
@@ -293,30 +316,33 @@ exports.closeWon = async (req, res, next) => {
       return res.status(400).json({ message: 'Lead already closed' });
     }
 
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you' });
     }
 
     lead.closureStatus = 'WON';
+    lead.status = 'WON';
     lead.closingRemark = closingRemark;
-    if (dealValue) lead.dealValue = dealValue;
-    if (product) lead.product = product;
+    if (dealValue !== undefined && dealValue !== null && dealValue !== '') lead.dealValue = Number(dealValue) || dealValue;
+    if (product && product.trim()) lead.product = product.trim();
     lead.closedBy = req.userId;
     lead.closedAt = new Date();
+    lead.nextFollowUpAt = null; // A Won lead must no longer appear as an active/upcoming/overdue follow-up
     await lead.save({ session });
 
     await LeadActivity.create([{
       lead: leadId, action: 'Lead Closed Won',
       performedBy: req.userId, role: req.userRole,
-      metadata: { closingRemark, dealValue, product }
+      metadata: { closingRemark, dealValue, product: product ? product.trim() : undefined }
     }], { session });
 
     await session.commitTransaction();
     session.endSession();
 
-    res.json({ message: 'Lead closed as Won' });
+    res.json({ message: 'Lead closed as Won', lead });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -329,11 +355,14 @@ exports.closeLost = async (req, res, next) => {
   session.startTransaction();
   try {
     const leadId = req.params.id;
-    const { closingRemark, lostReason } = req.body;
-    if (!closingRemark || !lostReason) {
+    const { closingRemark: rawRemark, remark: altRemark, lostReason: rawReason, reason: altReason } = req.body;
+    const closingRemark = (rawRemark || altRemark || '').trim();
+    const lostReason = (rawReason || altReason || '').trim();
+
+    if (!closingRemark && !lostReason) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'closingRemark and lostReason are required for closing as Lost' });
+      return res.status(400).json({ message: 'A remark or reason is required when marking a lead as Lost' });
     }
 
     const lead = await Lead.findById(leadId).session(session);
@@ -349,34 +378,48 @@ exports.closeLost = async (req, res, next) => {
       return res.status(400).json({ message: 'Lead already closed' });
     }
 
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you' });
     }
 
     lead.closureStatus = 'LOST';
+    lead.status = 'LOST';
     lead.closingRemark = closingRemark;
-    lead.lostReason = lostReason;
+    lead.lostReason = lostReason || 'Other';
     lead.closedBy = req.userId;
     lead.closedAt = new Date();
+    lead.nextFollowUpAt = null; // A Lost lead must no longer appear as an active/upcoming/overdue follow-up
     await lead.save({ session });
 
     await LeadActivity.create([{
       lead: leadId, action: 'Lead Closed Lost',
       performedBy: req.userId, role: req.userRole,
-      metadata: { closingRemark, lostReason }
+      metadata: { closingRemark, lostReason: lead.lostReason }
     }], { session });
 
     await session.commitTransaction();
     session.endSession();
 
-    res.json({ message: 'Lead closed as Lost' });
+    res.json({ message: 'Lead closed as Lost', lead });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
     next(err);
   }
+};
+
+exports.setOutcome = async (req, res, next) => {
+  const outcome = (req.body.outcome || req.body.status || '').toUpperCase();
+  if (outcome === 'WON') {
+    return exports.closeWon(req, res, next);
+  }
+  if (outcome === 'LOST') {
+    return exports.closeLost(req, res, next);
+  }
+  return res.status(400).json({ message: 'Invalid outcome: must be WON or LOST' });
 };
 
 // ============ CONTACT MANAGEMENT ============
@@ -540,6 +583,257 @@ exports.listContacts = async (req, res, next) => {
     const contacts = await ContactPerson.find({ lead: leadId }).sort({ isPrimary: -1, createdAt: -1 }).lean();
     res.json({ contacts });
   } catch (err) {
+    next(err);
+  }
+};
+
+exports.rescheduleFollowUp = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const leadId = req.params.id;
+    const { followUpDate, followUpTime, remarks } = req.body;
+
+    const lead = await Lead.findById(leadId).session(session);
+    if (!lead) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    // Won/Lost leads cannot have an active pending follow-up
+    if (lead.closureStatus && lead.closureStatus !== 'OPEN') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Cannot reschedule follow-up for a closed (Won/Lost) lead' });
+    }
+
+    // Permissions: Agents can only operate on their own leads; Admins can operate on any lead
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Forbidden: You can only reschedule follow-ups for leads assigned to you' });
+    }
+
+    if (!followUpDate) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Follow-up date is required' });
+    }
+
+    // Parse date and optional time into a Date object
+    let scheduledDate;
+    if (typeof followUpDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(followUpDate.trim())) {
+      const [y, m, d] = followUpDate.trim().split('-').map(Number);
+      let hours = 10;
+      let minutes = 0;
+      if (followUpTime && typeof followUpTime === 'string') {
+        const [th, tm] = followUpTime.trim().split(':').map(Number);
+        if (!isNaN(th)) hours = th;
+        if (!isNaN(tm)) minutes = tm;
+      }
+      scheduledDate = new Date(y, m - 1, d, hours, minutes, 0, 0);
+    } else {
+      scheduledDate = new Date(followUpDate);
+    }
+
+    if (isNaN(scheduledDate.getTime())) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Invalid follow-up date or time' });
+    }
+
+    const previousFollowUpAt = lead.nextFollowUpAt;
+    lead.nextFollowUpAt = scheduledDate;
+
+    if (remarks && typeof remarks === 'string' && remarks.trim()) {
+      lead.latestRemark = remarks.trim();
+    }
+    await lead.save({ session });
+
+    // Update existing CallLog in-place if one exists (prevents duplicate follow-ups)
+    const existingCallWithFollowUp = await CallLog.findOne({
+      lead: leadId,
+      followUpAt: { $exists: true, $ne: null },
+    }).sort({ calledAt: -1, createdAt: -1 }).session(session);
+
+    if (existingCallWithFollowUp) {
+      existingCallWithFollowUp.followUpAt = scheduledDate;
+      if (remarks && typeof remarks === 'string' && remarks.trim()) {
+        existingCallWithFollowUp.remark = remarks.trim();
+      }
+      await existingCallWithFollowUp.save({ session });
+    }
+
+    // Log activity
+    await LeadActivity.create([{
+      lead: leadId,
+      action: 'Follow-up Rescheduled',
+      performedBy: req.userId,
+      role: req.userRole,
+      metadata: {
+        previousFollowUpAt,
+        newFollowUpAt: scheduledDate,
+        remarks: remarks ? remarks.trim() : '',
+      },
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populated = await Lead.findById(leadId)
+      .populate('currentOwner', 'fullName username email agentRole')
+      .populate('createdBy', 'fullName username')
+      .populate('primaryContact')
+      .lean();
+
+    res.json({
+      message: 'Follow-up rescheduled successfully',
+      lead: populated,
+      nextFollowUpAt: populated.nextFollowUpAt,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+};
+
+exports.completeFollowUp = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const leadId = req.params.id;
+    const { remarks } = req.body;
+
+    const lead = await Lead.findById(leadId).session(session);
+    if (!lead) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    if (lead.closureStatus && lead.closureStatus !== 'OPEN') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Cannot complete follow-up for a closed (Won/Lost) lead' });
+    }
+
+    if (!lead.nextFollowUpAt) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'No active follow-up to complete' });
+    }
+
+    // Permissions: Agents can only operate on their own leads; Admins can operate on any lead
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Forbidden: You can only complete follow-ups for leads assigned to you' });
+    }
+
+    const previousFollowUpAt = lead.nextFollowUpAt;
+    lead.nextFollowUpAt = null;
+
+    if (remarks && typeof remarks === 'string' && remarks.trim()) {
+      lead.latestRemark = remarks.trim();
+    }
+    await lead.save({ session });
+
+    // Log LeadActivity
+    await LeadActivity.create([{
+      lead: leadId,
+      action: 'Follow-up Completed',
+      performedBy: req.userId,
+      role: req.userRole,
+      metadata: {
+        previousFollowUpAt,
+        completedAt: new Date(),
+        remarks: remarks ? remarks.trim() : '',
+      },
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populated = await Lead.findById(leadId)
+      .populate('currentOwner', 'fullName username email agentRole')
+      .populate('createdBy', 'fullName username')
+      .populate('primaryContact')
+      .lean();
+
+    res.json({
+      message: 'Follow-up marked as completed',
+      lead: populated,
+      nextFollowUpAt: null,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+};
+
+exports.reopenLead = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const leadId = req.params.id;
+    const { remarks } = req.body;
+
+    const lead = await Lead.findById(leadId).session(session);
+    if (!lead) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    if (lead.closureStatus === 'OPEN') {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Lead is already open' });
+    }
+
+    const previousStatus = lead.closureStatus;
+    lead.closureStatus = 'OPEN';
+    lead.status = 'OPEN';
+    lead.closedBy = null;
+    lead.closedAt = null;
+    if (remarks && typeof remarks === 'string' && remarks.trim()) {
+      lead.latestRemark = remarks.trim();
+    }
+    await lead.save({ session });
+
+    await LeadActivity.create([{
+      lead: leadId,
+      action: 'Lead Re-engaged',
+      performedBy: req.userId,
+      role: req.userRole,
+      metadata: {
+        previousStatus,
+        reopenedAt: new Date(),
+        remarks: remarks ? remarks.trim() : 'Lead reopened for re-engagement',
+      },
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populated = await Lead.findById(leadId)
+      .populate('currentOwner', 'fullName username email agentRole')
+      .populate('createdBy', 'fullName username')
+      .populate('primaryContact')
+      .lean();
+
+    res.json({
+      message: 'Lead successfully re-opened for re-engagement',
+      lead: populated,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
     next(err);
   }
 };

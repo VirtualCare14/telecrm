@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Box, Typography, TextField, Button, FormControl, InputLabel,
-  Select, MenuItem, Pagination, Paper, Grid
+  Select, MenuItem, Pagination, Paper, Grid, Alert
 } from '@mui/material';
 import { Add, Search as SearchIcon, Clear } from '@mui/icons-material';
 import LeadTable from '../components/LeadTable';
@@ -13,27 +13,39 @@ import { DATE_FILTERS } from '../utils/constants';
 import { getDateRangeFromFilter } from '../utils/dateHelpers';
 
 export default function Leads() {
+  const navigate = useNavigate();
+  const user = useAuthStore((s) => s.user);
+  const [searchParams] = useSearchParams();
+
   const [leads, setLeads] = useState([]);
   const [search, setSearch] = useState('');
-  const [ownerFilter, setOwnerFilter] = useState('');
+  const [ownerFilter, setOwnerFilter] = useState(() => {
+    const unassigned = searchParams.get('unassigned');
+    const owner = searchParams.get('owner');
+    if (unassigned === 'true' || owner === 'unassigned') return 'unassigned';
+    return owner || '';
+  });
   const [dateFilter, setDateFilter] = useState('');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
-  const [closureFilter, setClosureFilter] = useState('');
-  const [followUpFilter, setFollowUpFilter] = useState('');
+  const [closureFilter, setClosureFilter] = useState(() => searchParams.get('closureStatus') || '');
+  const [followUpFilter, setFollowUpFilter] = useState(() => searchParams.get('followUpType') || '');
   const [agents, setAgents] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [pageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const navigate = useNavigate();
-  const user = useAuthStore((s) => s.user);
-  const [searchParams] = useSearchParams();
 
   const buildParams = useCallback(() => {
     const params = { search, page, limit: pageSize };
-    if (user?.role === 'ADMIN' && ownerFilter) params.owner = ownerFilter;
+    if (ownerFilter) {
+      if (ownerFilter === 'unassigned') {
+        params.unassigned = 'true';
+      } else {
+        params.owner = ownerFilter;
+      }
+    }
     if (closureFilter) params.closureStatus = closureFilter;
     if (followUpFilter) params.followUpType = followUpFilter;
     if (dateFilter) {
@@ -47,58 +59,95 @@ export default function Leads() {
       }
     }
     return params;
-  }, [search, page, pageSize, user, ownerFilter, closureFilter, followUpFilter, dateFilter, customStart, customEnd]);
-
-  const fetchLeads = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const params = buildParams();
-      const res = await listLeads(params);
-      setLeads(res.leads || []);
-      setTotalPages(res.totalPages || Math.ceil((res.total || 0) / pageSize) || 1);
-    } catch (err) {
-      setError(err.response?.data?.message || 'Unable to load leads');
-    } finally {
-      setLoading(false);
-    }
-  }, [buildParams]);
+  }, [search, page, pageSize, ownerFilter, closureFilter, followUpFilter, dateFilter, customStart, customEnd]);
 
   useEffect(() => {
     if (user?.role === 'ADMIN') {
-      getAgents().then(setAgents).catch(() => {});
+      getAgents().then((data) => {
+        const agentList = data || [];
+        setAgents(agentList);
+        if (ownerFilter && ownerFilter !== 'unassigned') {
+          const match = agentList.find(
+            (a) => a._id === ownerFilter || a.fullName === ownerFilter || a.username === ownerFilter
+          );
+          if (match && match._id !== ownerFilter) {
+            setOwnerFilter(match._id);
+          }
+        }
+      }).catch(() => {});
     }
   }, [user]);
 
-  // Auto-fetch when filters change
+  // Auto-fetch when filters change, with cancellation to prevent stale response race conditions
   useEffect(() => {
-    fetchLeads();
-  }, [page, ownerFilter, dateFilter, closureFilter, followUpFilter, customStart, customEnd, fetchLeads]);
+    let isCurrent = true;
+
+    const runFetch = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const params = buildParams();
+        const res = await listLeads(params);
+        if (isCurrent) {
+          setLeads(res.leads || []);
+          setTotalPages(res.totalPages || Math.ceil((res.total || 0) / pageSize) || 1);
+        }
+      } catch (err) {
+        if (isCurrent) {
+          setError(err.response?.data?.message || 'Unable to load leads');
+        }
+      } finally {
+        if (isCurrent) {
+          setLoading(false);
+        }
+      }
+    };
+
+    runFetch();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [page, ownerFilter, dateFilter, closureFilter, followUpFilter, customStart, customEnd, buildParams]);
 
   // Handle search - use debounce for search text
   useEffect(() => {
     const timer = setTimeout(() => {
       if (search !== undefined) {
         setPage(1);
-        fetchLeads();
       }
     }, 400);
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Handle initial search params from KPI clicks
+  // Sync state if URL search parameters change while component is mounted
   useEffect(() => {
-    const closure = searchParams.get('closureStatus');
-    const followUp = searchParams.get('followUpType');
-    if (closure) setClosureFilter(closure);
-    if (followUp) {
-      setFollowUpFilter(followUp);
+    const closure = searchParams.get('closureStatus') || '';
+    const followUp = searchParams.get('followUpType') || '';
+    const unassigned = searchParams.get('unassigned');
+    const owner = searchParams.get('owner') || searchParams.get('agentId') || '';
+
+    let nextOwner = '';
+    if (unassigned === 'true' || owner === 'unassigned') {
+      nextOwner = 'unassigned';
+    } else if (owner) {
+      const match = agents.find((a) => a._id === owner || a.fullName === owner || a.username === owner);
+      nextOwner = match ? match._id : owner;
+    }
+
+    setClosureFilter(closure);
+    setFollowUpFilter(followUp);
+    setOwnerFilter(nextOwner);
+    if (!searchParams.toString()) {
+      setSearch('');
+      setDateFilter('');
+      setCustomStart('');
+      setCustomEnd('');
+    } else if (followUp) {
       setDateFilter('');
     }
-    if (closure || followUp) {
-      setPage(1);
-    }
-  }, [searchParams]);
+    setPage(1);
+  }, [searchParams, agents]);
 
   const handleClear = () => {
     setSearch('');
@@ -109,6 +158,7 @@ export default function Leads() {
     setClosureFilter('');
     setFollowUpFilter('');
     setPage(1);
+    navigate('/leads', { replace: true });
   };
 
   const hasFilters = search || ownerFilter || dateFilter || closureFilter || followUpFilter;
@@ -126,9 +176,9 @@ export default function Leads() {
           sx={{ 
             borderRadius: 2, 
             textTransform: 'none',
-            boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)',
+            boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
             '&:hover': {
-              boxShadow: '0 6px 16px rgba(25, 118, 210, 0.4)'
+              boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)'
             }
           }}
         >
@@ -166,6 +216,7 @@ export default function Leads() {
                 <InputLabel>Agent</InputLabel>
                 <Select value={ownerFilter} label="Agent" onChange={(e) => { setOwnerFilter(e.target.value); setPage(1); }} sx={{ borderRadius: 2 }}>
                   <MenuItem value="">All Agents</MenuItem>
+                  <MenuItem value="unassigned">Unassigned Leads</MenuItem>
                   {agents.map((agent) => (
                     <MenuItem key={agent._id} value={agent._id}>{agent.fullName || agent.username}</MenuItem>
                   ))}

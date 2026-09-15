@@ -1,23 +1,24 @@
 import React from 'react';
 import { Paper, Typography, Box, Skeleton } from '@mui/material';
 
-export default function KpiCard({ title, value, icon, color, onClick, loading }) {
+export default function KpiCard({ title, value, icon, color, onClick, loading, sx }) {
   return (
     <Paper
       elevation={0}
       sx={{
-        p: 3,
+        p: { xs: 2, sm: 2.5 },
         borderRadius: 3,
         border: '1px solid',
         borderColor: 'divider',
         cursor: onClick ? 'pointer' : 'default',
         transition: 'all 0.2s',
-        bgcolor: color || 'background.paper',
+        bgcolor: 'background.paper',
         '&:hover': onClick ? {
           transform: 'translateY(-2px)',
-          boxShadow: 3,
+          boxShadow: color ? `0 8px 24px ${color}20` : '0 8px 24px rgba(15, 23, 42, 0.08)',
           borderColor: color || 'primary.main',
         } : {},
+        ...sx,
       }}
       onClick={onClick}
     >

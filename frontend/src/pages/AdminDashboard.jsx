@@ -5,32 +5,41 @@ import {
 } from '@mui/material';
 import {
   Business, CalendarMonth, Warning, People, CheckCircle, Cancel,
-  FilterList
+  FilterList, PersonOff
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import KpiCard from '../components/dashboard/KpiCard';
 import LeadTable from '../components/LeadTable';
+import AgentPerformanceTable from '../components/dashboard/AgentPerformanceTable';
 import { getAdminDashboard } from '../services/dashboardService';
 import { getAgents } from '../services/agentService';
 import { listLeads } from '../services/leadsService';
 import { DATE_FILTERS } from '../utils/constants';
 import { getDateRangeFromFilter } from '../utils/dateHelpers';
 
+const ACTIVE_LEAD_TABS = [
+  { id: 'all', label: 'All' },
+  { id: 'upcoming', label: 'Upcoming' },
+  { id: 'overdue', label: 'Overdue' },
+  { id: 'unassigned', label: 'Unassigned' },
+];
+
 export default function AdminDashboard() {
   const [kpis, setKpis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [agents, setAgents] = useState([]);
+  const [agentsLoading, setAgentsLoading] = useState(false);
   const [filterAgentId, setFilterAgentId] = useState('');
   const [dateFilter, setDateFilter] = useState('');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [recentLeads, setRecentLeads] = useState([]);
   const [recentLoading, setRecentLoading] = useState(false);
+  const [activeLeadTab, setActiveLeadTab] = useState('all');
   const navigate = useNavigate();
 
-  const buildParams = useCallback(() => {
+  const buildDateParams = useCallback(() => {
     const params = {};
-    if (filterAgentId) params.agentId = filterAgentId;
     if (dateFilter) {
       if (dateFilter === 'custom') {
         if (customStart) params.startDate = customStart;
@@ -42,12 +51,14 @@ export default function AdminDashboard() {
       }
     }
     return params;
-  }, [filterAgentId, dateFilter, customStart, customEnd]);
+  }, [dateFilter, customStart, customEnd]);
 
   const fetchDashboard = useCallback(async () => {
     setLoading(true);
     try {
-      const params = buildParams();
+      const dateParams = buildDateParams();
+      const params = { ...dateParams };
+      if (filterAgentId) params.agentId = filterAgentId;
       const data = await getAdminDashboard(params);
       setKpis(data);
     } catch (e) {
@@ -55,13 +66,28 @@ export default function AdminDashboard() {
     } finally {
       setLoading(false);
     }
-  }, [buildParams]);
+  }, [buildDateParams, filterAgentId]);
 
   const fetchRecentLeads = useCallback(async () => {
     setRecentLoading(true);
     try {
-      const params = { page: 1, limit: 5 };
+      const dateParams = buildDateParams();
+      const params = { page: 1, limit: 5, ...dateParams };
       if (filterAgentId) params.owner = filterAgentId;
+
+      if (activeLeadTab === 'upcoming') {
+        params.followUpType = 'upcoming';
+      } else if (activeLeadTab === 'overdue') {
+        params.followUpType = 'overdue';
+      } else if (activeLeadTab === 'unassigned') {
+        if (filterAgentId) {
+          setRecentLeads([]);
+          setRecentLoading(false);
+          return;
+        }
+        params.unassigned = 'true';
+      }
+
       const data = await listLeads(params);
       setRecentLeads(data.leads || []);
     } catch (e) {
@@ -69,24 +95,38 @@ export default function AdminDashboard() {
     } finally {
       setRecentLoading(false);
     }
-  }, [filterAgentId]);
+  }, [buildDateParams, filterAgentId, activeLeadTab]);
 
-  useEffect(() => {
-    fetchAgents();
-  }, []);
+  const fetchAgents = useCallback(async () => {
+    setAgentsLoading(true);
+    try {
+      const dateParams = buildDateParams();
+      const data = await getAgents(dateParams);
+      setAgents(data || []);
+    } catch (e) {
+      console.error('Fetch agents error', e);
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, [buildDateParams]);
 
   useEffect(() => {
     fetchDashboard();
+    fetchAgents();
     fetchRecentLeads();
-  }, [filterAgentId, dateFilter, customStart, customEnd, fetchDashboard, fetchRecentLeads]);
+  }, [fetchDashboard, fetchAgents, fetchRecentLeads]);
 
-  const fetchAgents = async () => {
-    try { setAgents(await getAgents()); } catch (e) { console.error(e); }
-  };
+  const displayedAgents = filterAgentId
+    ? agents.filter((a) => a._id === filterAgentId)
+    : agents;
 
   const navigateToLeads = (params) => {
-    const query = new URLSearchParams(params).toString();
-    navigate(`/leads?${query}`);
+    const combined = { ...params };
+    if (filterAgentId && !params.unassigned) combined.owner = filterAgentId;
+    const dateParams = buildDateParams();
+    Object.assign(combined, dateParams);
+    const query = new URLSearchParams(combined).toString();
+    navigate(query ? `/leads?${query}` : '/leads');
   };
 
   return (
@@ -152,14 +192,17 @@ export default function AdminDashboard() {
       {/* KPI Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
         {[
-          { title: 'Total Leads', value: kpis?.totalLeads, icon: <Business />, color: '#facc15', onClick: () => navigateToLeads({}) },
-          { title: 'Upcoming Follow-ups', value: kpis?.upcomingFollowups, icon: <CalendarMonth />, color: '#38bdf8', onClick: () => navigateToLeads({ followUpType: 'upcoming' }) },
-          { title: 'Overdue Follow-ups', value: kpis?.overdueFollowups, icon: <Warning />, color: '#f97316', onClick: () => navigateToLeads({ followUpType: 'overdue' }) },
-          { title: 'Total Agents', value: kpis?.totalAgents, icon: <People />, color: '#a78bfa', onClick: () => navigate('/admin/agents') },
-          { title: 'Won Leads', value: kpis?.totalWon, icon: <CheckCircle />, color: '#10b981', onClick: () => navigateToLeads({ closureStatus: 'WON' }) },
-          { title: 'Lost Leads', value: kpis?.totalLost, icon: <Cancel />, color: '#ef4444', onClick: () => navigateToLeads({ closureStatus: 'LOST' }) }
+          // First row: Total Leads, Unassigned Leads, Total Agents, Won Leads
+          { title: 'Total Leads', value: kpis?.totalLeads, icon: <Business />, color: '#ea580c', onClick: () => navigateToLeads({}), md: 3 },
+          { title: 'Unassigned Leads', value: kpis?.unassignedLeads, icon: <PersonOff />, color: '#ec4899', onClick: () => navigateToLeads({ unassigned: 'true' }), md: 3 },
+          { title: 'Total Agents', value: kpis?.totalAgents, icon: <People />, color: '#a78bfa', onClick: () => navigate('/admin/agents'), md: 3 },
+          { title: 'Won Leads', value: kpis?.totalWon, icon: <CheckCircle />, color: '#10b981', onClick: () => navigateToLeads({ closureStatus: 'WON' }), md: 3 },
+          // Second row: Upcoming Follow-ups, Overdue Follow-ups, Lost Leads
+          { title: 'Upcoming Follow-ups', value: kpis?.upcomingFollowups, icon: <CalendarMonth />, color: '#38bdf8', onClick: () => navigateToLeads({ followUpType: 'upcoming' }), md: 4 },
+          { title: 'Overdue Follow-ups', value: kpis?.overdueFollowups, icon: <Warning />, color: '#f97316', onClick: () => navigateToLeads({ followUpType: 'overdue' }), md: 4 },
+          { title: 'Lost Leads', value: kpis?.totalLost, icon: <Cancel />, color: '#ef4444', onClick: () => navigateToLeads({ closureStatus: 'LOST' }), md: 4 }
         ].map((kpi, idx) => (
-          <Grid item xs={12} sm={6} md={4} key={idx}>
+          <Grid item xs={12} sm={6} md={kpi.md} key={idx}>
             <Paper
               elevation={0}
               sx={{
@@ -231,6 +274,21 @@ export default function AdminDashboard() {
         ))}
       </Grid>
 
+      {/* Agent Performance */}
+      <Paper elevation={0} sx={{ 
+        p: 3, 
+        mb: 3, 
+        borderRadius: 3, 
+        border: '1px solid', 
+        borderColor: 'divider',
+        bgcolor: 'background.paper'
+      }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
+          <Typography variant="h6" fontWeight={700}>Agent Performance</Typography>
+        </Box>
+        <AgentPerformanceTable agents={displayedAgents} allAgents={agents} loading={agentsLoading} />
+      </Paper>
+
       {/* Recent Leads - Active work */}
       <Paper elevation={0} sx={{ 
         p: 3, 
@@ -239,7 +297,7 @@ export default function AdminDashboard() {
         borderColor: 'divider',
         bgcolor: 'background.paper'
       }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
           <Typography variant="h6" fontWeight={700}>Active Leads (Latest 5)</Typography>
           <Button 
             size="small" 
@@ -248,15 +306,61 @@ export default function AdminDashboard() {
             sx={{ 
               textTransform: 'none',
               borderRadius: 2,
-              boxShadow: '0 2px 8px rgba(25, 118, 210, 0.2)',
+              boxShadow: '0 2px 8px rgba(234, 88, 12, 0.25)',
               '&:hover': {
-                boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)'
+                boxShadow: '0 4px 12px rgba(234, 88, 12, 0.35)'
               }
             }}
           >
             View All
           </Button>
         </Box>
+
+        {/* Filter buttons above Active Leads table */}
+        <Box sx={{ display: 'flex', gap: 1, mb: 2.5, flexWrap: 'wrap' }}>
+          {ACTIVE_LEAD_TABS.map((tab) => {
+            const isSelected = activeLeadTab === tab.id;
+            return (
+              <Button
+                key={tab.id}
+                size="small"
+                variant={isSelected ? 'contained' : 'outlined'}
+                onClick={() => setActiveLeadTab(tab.id)}
+                sx={{
+                  textTransform: 'none',
+                  borderRadius: 2,
+                  fontSize: 12,
+                  fontWeight: isSelected ? 700 : 500,
+                  px: 2,
+                  py: 0.5,
+                  minWidth: 'auto',
+                  ...(isSelected
+                    ? {
+                        bgcolor: 'primary.main',
+                        color: '#ffffff',
+                        boxShadow: '0 2px 8px rgba(234, 88, 12, 0.25)',
+                        '&:hover': {
+                          bgcolor: 'primary.dark',
+                        },
+                      }
+                    : {
+                        borderColor: 'divider',
+                        color: 'text.secondary',
+                        bgcolor: 'transparent',
+                        '&:hover': {
+                          bgcolor: 'rgba(234, 88, 12, 0.06)',
+                          borderColor: 'primary.main',
+                          color: 'primary.main',
+                        },
+                      }),
+                }}
+              >
+                {tab.label}
+              </Button>
+            );
+          })}
+        </Box>
+
         <LeadTable leads={recentLeads} loading={recentLoading} />
       </Paper>
     </Box>

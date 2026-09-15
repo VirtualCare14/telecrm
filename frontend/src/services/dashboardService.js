@@ -5,6 +5,11 @@ export async function getAdminDashboard(params) {
   return res.data
 }
 
+export async function getAdminReports(params) {
+  const res = await api.get('/dashboard/reports', { params })
+  return res.data
+}
+
 export async function getAgentDashboard(params) {
   const res = await api.get('/dashboard/agent', { params })
   return res.data

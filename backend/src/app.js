@@ -12,6 +12,8 @@ const leadsRouter = require('./routes/leads');
 const transferRouter = require('./routes/transferRequests');
 const adminRouter = require('./routes/admin');
 const dashboardRouter = require('./routes/dashboard');
+const rolesRouter = require('./routes/roles');
+const notificationsRouter = require('./routes/notifications');
 
 const app = express();
 
@@ -56,6 +58,8 @@ app.use('/api/leads', leadsRouter);
 app.use('/api/transfer-requests', transferRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/dashboard', dashboardRouter);
+app.use('/api/roles', rolesRouter);
+app.use('/api/notifications', notificationsRouter);
 
 app.use((req, res, next) => {
   res.status(404).json({ message: 'Not Found' });

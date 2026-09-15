@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Lead = require('../models/Lead');
+const User = require('../models/User');
 const LeadTransferRequest = require('../models/LeadTransferRequest');
 const LeadActivity = require('../models/LeadActivity');
 
@@ -16,16 +17,63 @@ exports.requestTransfer = async (req, res, next) => {
       return res.status(400).json({ message: 'Cannot request transfer for a closed lead' });
     }
 
-    // Only current owner can request transfer (or Admin could override; enforce here)
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) return res.status(403).json({ message: 'Forbidden' });
+    const toAgent = await User.findById(toAgentId);
+    if (!toAgent || toAgent.role !== 'AGENT') {
+      return res.status(400).json({ message: 'Invalid destination agent' });
+    }
+
+    // If Admin transfers, execute the transfer immediately
+    if (req.userRole === 'ADMIN') {
+      const oldOwner = lead.currentOwner;
+      lead.currentOwner = toAgent._id;
+      await lead.save();
+
+      const reqDoc = await LeadTransferRequest.create({
+        lead: leadId,
+        fromAgent: oldOwner || req.userId,
+        toAgent: toAgent._id,
+        status: 'Approved',
+        respondedAt: new Date(),
+      });
+
+      await LeadActivity.create([
+        {
+          lead: leadId,
+          action: 'Transfer Approved',
+          performedBy: req.userId,
+          role: req.userRole,
+          metadata: { requestId: reqDoc._id, from: oldOwner, to: toAgent._id },
+        },
+        {
+          lead: leadId,
+          action: 'Ownership Changed',
+          performedBy: req.userId,
+          role: req.userRole,
+          metadata: { newOwner: toAgent._id },
+        },
+      ]);
+
+      return res.status(200).json({ message: 'Lead transferred successfully', request: reqDoc });
+    }
+
+    // Only current owner can request transfer
+    if (req.userRole === 'AGENT' && lead.currentOwner && lead.currentOwner.toString() !== req.userId) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
 
     // Prevent duplicate pending request for same lead to same agent
-    const existing = await LeadTransferRequest.findOne({ lead: leadId, toAgent: toAgentId, status: 'Pending' });
+    const existing = await LeadTransferRequest.findOne({ lead: leadId, toAgent: toAgent._id, status: 'Pending' });
     if (existing) return res.status(400).json({ message: 'Duplicate pending transfer request exists' });
 
-    const reqDoc = await LeadTransferRequest.create({ lead: leadId, fromAgent: req.userId, toAgent: toAgentId });
+    const reqDoc = await LeadTransferRequest.create({ lead: leadId, fromAgent: req.userId, toAgent: toAgent._id, status: 'Pending' });
 
-    await LeadActivity.create({ lead: leadId, action: 'Transfer Requested', performedBy: req.userId, role: req.userRole, metadata: { toAgent: toAgentId, requestId: reqDoc._id } });
+    await LeadActivity.create({
+      lead: leadId,
+      action: 'Transfer Requested',
+      performedBy: req.userId,
+      role: req.userRole,
+      metadata: { toAgent: toAgent._id, requestId: reqDoc._id },
+    });
 
     res.status(201).json({ request: reqDoc });
   } catch (err) {
@@ -77,7 +125,11 @@ exports.approveRequest = async (req, res, next) => {
     }
 
     // change ownership
-    await Lead.findByIdAndUpdate(reqDoc.lead, { currentOwner: reqDoc.toAgent }, { session });
+    const lead = await Lead.findById(reqDoc.lead).session(session);
+    if (lead) {
+      lead.currentOwner = reqDoc.toAgent;
+      await lead.save({ session });
+    }
 
     reqDoc.status = 'Approved';
     reqDoc.respondedAt = new Date();

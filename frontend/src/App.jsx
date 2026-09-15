@@ -5,6 +5,8 @@ import theme from './theme/theme';
 import Login from './pages/Login';
 import AdminDashboard from './pages/AdminDashboard';
 import AdminAgents from './pages/AdminAgents';
+import AdminRoles from './pages/AdminRoles';
+import AdminReports from './pages/AdminReports';
 import AgentDashboard from './pages/AgentDashboard';
 import Unauthorized from './pages/Unauthorized';
 import NotFound from './pages/NotFound';
@@ -31,10 +33,13 @@ export default function App() {
           <Route element={<AdminRoute />}>
             <Route path="/admin" element={<AppLayout><AdminDashboard /></AppLayout>} />
             <Route path="/admin/agents" element={<AppLayout><AdminAgents /></AppLayout>} />
+            <Route path="/admin/roles" element={<AppLayout><AdminRoles /></AppLayout>} />
+            <Route path="/admin/reports" element={<AppLayout><AdminReports /></AppLayout>} />
           </Route>
 
           {/* Shared routes (Admin + Agent) */}
           <Route path="/agent" element={<AppLayout><AgentDashboard /></AppLayout>} />
+          <Route path="/agent/leads" element={<AppLayout><AgentDashboard /></AppLayout>} />
           <Route path="/leads" element={<AppLayout><Leads /></AppLayout>} />
           <Route path="/leads/create" element={<AppLayout><CreateLead /></AppLayout>} />
           <Route path="/leads/:id" element={<AppLayout><LeadDetails /></AppLayout>} />

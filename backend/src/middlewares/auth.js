@@ -20,8 +20,10 @@ exports.authenticate = async (req, res, next) => {
     const user = await User.findById(sub);
     if (!user || !user.active) return res.status(401).json({ message: 'User inactive or not found' });
 
-    req.userId = sub;
-    req.userRole = role;
+    req.userId = user._id.toString();
+    req.userRole = user.role;
+    req.agentRole = user.agentRole;
+    req.user = user;
     req.sessionId = sid;
     next();
   } catch (err) {
@@ -32,6 +34,25 @@ exports.authenticate = async (req, res, next) => {
 
 exports.authorizeRole = (roles = []) => (req, res, next) => {
   if (!roles.length) return next();
-  if (!roles.includes(req.userRole)) return res.status(403).json({ message: 'Forbidden' });
-  next();
+
+  // Dynamic admin check: user.role === 'ADMIN' or dynamic agentRole is 'admin'
+  const isAdmin = req.user?.role === 'ADMIN' || (req.user?.agentRole && req.user.agentRole.toLowerCase() === 'admin');
+
+  if (isAdmin) {
+    if (roles.includes('ADMIN') || roles.includes(req.userRole) || roles.length === 0) {
+      return next();
+    }
+  }
+
+  if (roles.includes('AGENT') && (req.user?.role === 'AGENT' || req.userRole === 'AGENT')) {
+    return next();
+  }
+
+  if (roles.includes(req.userRole)) return next();
+
+  if (roles.includes('ADMIN') && !roles.includes('AGENT')) {
+    return res.status(403).json({ message: 'Forbidden: Admin access required' });
+  }
+
+  return res.status(403).json({ message: 'Forbidden' });
 };

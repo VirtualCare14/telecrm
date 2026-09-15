@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   Box, Typography, Button, Alert, Grid, Paper, Chip, CircularProgress,
   Tab, Tabs, FormControl, InputLabel, Select, MenuItem, Checkbox,
-  List, ListItem, ListItemText, ListItemIcon
+  List, ListItem, ListItemText, ListItemIcon, FormControlLabel
 } from '@mui/material';
 import { CheckCircle, Cancel, ArrowBack, TransferWithinAStation } from '@mui/icons-material';
 import { incomingRequests, outgoingRequests, approveRequest, rejectRequest, cancelRequest } from '../services/transferService';
@@ -77,6 +77,14 @@ export default function TransferRequests() {
     setSelectedLeadIds((prev) =>
       prev.includes(leadId) ? prev.filter((id) => id !== leadId) : [...prev, leadId]
     );
+  };
+
+  const handleSelectAll = () => {
+    if (sourceLeads.length > 0 && selectedLeadIds.length === sourceLeads.length) {
+      setSelectedLeadIds([]);
+    } else {
+      setSelectedLeadIds(sourceLeads.map((l) => l._id));
+    }
   };
 
   const handleBulkTransfer = async () => {
@@ -160,6 +168,9 @@ export default function TransferRequests() {
     );
   };
 
+  const selectedFromAgent = agents.find((a) => a._id === fromAgentId);
+  const selectedAgentName = selectedFromAgent?.fullName || selectedFromAgent?.username || 'Selected agent';
+
   return (
     <Box>
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3, flexWrap: 'wrap' }}>
@@ -170,7 +181,7 @@ export default function TransferRequests() {
             textTransform: 'none',
             borderRadius: 2,
             '&:hover': {
-              bgcolor: 'rgba(25, 118, 210, 0.08)'
+              bgcolor: 'rgba(234, 88, 12, 0.08)'
             }
           }}
         >
@@ -183,7 +194,7 @@ export default function TransferRequests() {
 
       {error && <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }}>{error}</Alert>}
       {bulkSuccess && <Alert severity="success" sx={{ mb: 2, borderRadius: 2 }} onClose={() => setBulkSuccess(null)}>{bulkSuccess}</Alert>}
-      {bulkError && <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }} onClose={() => setBulkError(null)}>{bulkError}</Alert>}
+      {bulkError && bulkError !== 'No leads found for transfer' && <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }} onClose={() => setBulkError(null)}>{bulkError}</Alert>}
 
       {/* Bulk Transfer Section - Admin Only */}
       {user?.role === 'ADMIN' && (
@@ -220,14 +231,14 @@ export default function TransferRequests() {
             <Grid item xs={12} md={4} sx={{ display: 'flex', alignItems: 'center' }}>
               <Button 
                 variant="contained" 
-                disabled={!fromAgentId || !toAgentId || bulkLoading} 
+                disabled={!fromAgentId || !toAgentId || bulkLoading || sourceLeads.length === 0} 
                 onClick={handleBulkTransfer} 
                 sx={{ 
                   borderRadius: 2, 
                   textTransform: 'none',
-                  boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)',
+                  boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
                   '&:hover': {
-                    boxShadow: '0 6px 16px rgba(25, 118, 210, 0.4)'
+                    boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)'
                   }
                 }}
               >
@@ -235,16 +246,72 @@ export default function TransferRequests() {
               </Button>
             </Grid>
           </Grid>
-          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>Select leads below or leave all selected to transfer all.</Typography>
-          <Paper elevation={0} sx={{ p: 1.5, maxHeight: 200, overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
-            {loadingLeads ? <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}><CircularProgress size={24} /></Box>
-            : sourceLeads.length === 0 ? <Typography color="text.secondary" variant="body2">No leads for this agent.</Typography>
-            : <List dense>{sourceLeads.map((lead) => (
-                <ListItem key={lead._id} button onClick={() => handleToggleLead(lead._id)} sx={{ '&:hover': { bgcolor: 'rgba(25, 118, 210, 0.02)' } }}>
-                  <ListItemIcon><Checkbox edge="start" checked={selectedLeadIds.includes(lead._id)} size="small" /></ListItemIcon>
-                  <ListItemText primary={`${lead.organizationName} (#${lead.leadNumber})`} secondary={lead.primaryContact?.name || ''} />
-                </ListItem>
-              ))}</List>}
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            Select the leads you want to transfer, or select all.
+          </Typography>
+          <Paper elevation={0} sx={{ p: 1.5, maxHeight: 240, overflow: 'auto', border: '1px solid', borderColor: 'divider', borderRadius: 2, bgcolor: 'background.paper' }}>
+            {loadingLeads ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}><CircularProgress size={24} /></Box>
+            ) : !fromAgentId ? (
+              <Box sx={{ py: 2, textAlign: 'center' }}>
+                <Typography color="text.secondary" variant="body2">Select an agent to view transferable leads.</Typography>
+              </Box>
+            ) : sourceLeads.length === 0 ? (
+              <Box sx={{ py: 3, px: 2, textAlign: 'center' }}>
+                <Typography variant="subtitle2" fontWeight={600} color="text.primary" sx={{ mb: 0.5 }}>
+                  No transferable leads
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {selectedAgentName} currently has no active leads available for transfer.
+                </Typography>
+              </Box>
+            ) : (
+              <>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    pb: 1,
+                    mb: 1,
+                    borderBottom: '1px solid',
+                    borderColor: 'divider',
+                    px: 0.5,
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        size="small"
+                        checked={sourceLeads.length > 0 && selectedLeadIds.length === sourceLeads.length}
+                        indeterminate={selectedLeadIds.length > 0 && selectedLeadIds.length < sourceLeads.length}
+                        onChange={handleSelectAll}
+                        sx={{ p: 0.5, mr: 0.5 }}
+                      />
+                    }
+                    label={
+                      <Typography variant="body2" fontWeight={600} color="text.primary">
+                        Select All
+                      </Typography>
+                    }
+                    sx={{ m: 0 }}
+                  />
+                  <Typography variant="body2" color="text.secondary" fontWeight={500}>
+                    {selectedLeadIds.length} {selectedLeadIds.length === 1 ? 'lead' : 'leads'} selected
+                  </Typography>
+                </Box>
+                <List dense sx={{ p: 0 }}>
+                  {sourceLeads.map((lead) => (
+                    <ListItem key={lead._id} button onClick={() => handleToggleLead(lead._id)} sx={{ '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.04)' }, borderRadius: 1 }}>
+                      <ListItemIcon sx={{ minWidth: 36 }}>
+                        <Checkbox edge="start" checked={selectedLeadIds.includes(lead._id)} size="small" />
+                      </ListItemIcon>
+                      <ListItemText primary={`${lead.organizationName} (#${lead.leadNumber})`} secondary={lead.primaryContact?.name || ''} />
+                    </ListItem>
+                  ))}
+                </List>
+              </>
+            )}
           </Paper>
         </Paper>
       )}

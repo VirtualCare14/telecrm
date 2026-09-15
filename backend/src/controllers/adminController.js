@@ -27,7 +27,10 @@ exports.bulkTransfer = async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid destination agent' });
     }
 
-    const filter = { currentOwner: fromAgentId };
+    const fromAgentObjId = new mongoose.Types.ObjectId(fromAgentId);
+    const toAgentObjId = new mongoose.Types.ObjectId(toAgentId);
+
+    const filter = { currentOwner: fromAgentObjId };
     if (Array.isArray(leadIds) && leadIds.length > 0) filter._id = { $in: leadIds };
 
     const leads = await Lead.find(filter).session(session);
@@ -39,7 +42,8 @@ exports.bulkTransfer = async (req, res, next) => {
 
     const leadIdsTransferred = [];
     for (const l of leads) {
-      await Lead.findByIdAndUpdate(l._id, { currentOwner: toAgentId }, { session });
+      l.currentOwner = toAgentObjId;
+      await l.save({ session });
       leadIdsTransferred.push(l._id);
       await LeadActivity.create([{ lead: l._id, action: 'Admin Bulk Transfer', performedBy: req.userId, role: req.userRole, metadata: { fromAgentId, toAgentId } }], { session });
     }

@@ -26,7 +26,7 @@ exports.login = async (req, res, next) => {
       $or: [{ email: usernameOrEmail }, { username: usernameOrEmail }]
     });
     if (!user) return res.status(401).json({ message: 'Invalid credentials' });
-    if (!user.active) return res.status(403).json({ message: 'Account is inactive' });
+    if (!user.active) return res.status(403).json({ message: 'Account is inactive. Please contact your administrator.' });
 
     const match = await bcrypt.compare(password, user.passwordHash);
     if (!match) return res.status(401).json({ message: 'Invalid credentials' });
@@ -47,6 +47,7 @@ exports.login = async (req, res, next) => {
     const payload = {
       sub: user._id.toString(),
       role: user.role,
+      agentRole: user.agentRole,
       sid: session._id.toString(),
     };
 
@@ -76,7 +77,18 @@ exports.login = async (req, res, next) => {
     // set refresh cookie
     res.cookie('refreshToken', refreshToken, cookieOptions);
 
-    res.json({ accessTokenExpiresAt: expiresAt.getTime(), user: { id: user._id, fullName: user.fullName, email: user.email, role: user.role } });
+    res.json({ 
+      accessTokenExpiresAt: expiresAt.getTime(), 
+      user: { 
+        id: user._id, 
+        fullName: user.fullName, 
+        email: user.email, 
+        username: user.username,
+        role: user.role,
+        agentRole: user.agentRole,
+        active: user.active
+      } 
+    });
   } catch (err) {
     next(err);
   }
@@ -122,7 +134,12 @@ exports.refresh = async (req, res, next) => {
     session.expiresAt = newExpiresAt;
     await session.save();
 
-    const payload = { sub: user._id.toString(), role: user.role, sid: session._id.toString() };
+    const payload = { 
+      sub: user._id.toString(), 
+      role: user.role, 
+      agentRole: user.agentRole, 
+      sid: session._id.toString() 
+    };
     const token = jwt.sign(payload, process.env.JWT_SECRET || 'changeme', { expiresIn: jwtExpires });
 
     const isSecure = (process.env.COOKIE_SECURE === 'true') || process.env.NODE_ENV === 'production';

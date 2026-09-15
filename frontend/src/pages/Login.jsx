@@ -24,7 +24,8 @@ export default function Login() {
     try {
       const { user, accessTokenExpiresAt } = await login(usernameOrEmail, password);
       setAuth(user, accessTokenExpiresAt);
-      if (user.role === 'ADMIN') navigate('/admin');
+      const isAdmin = user.role === 'ADMIN' || (user.agentRole && user.agentRole.toLowerCase() === 'admin');
+      if (isAdmin) navigate('/admin');
       else navigate('/agent');
     } catch (err) {
       if (err.response?.status === 409) {
@@ -65,12 +66,12 @@ export default function Login() {
             left: 0,
             right: 0,
             bottom: 0,
-            background: 'radial-gradient(circle at 20% 80%, rgba(59, 130, 246, 0.3) 0%, transparent 50%)',
+            background: 'radial-gradient(circle at 20% 80%, rgba(234, 88, 12, 0.25) 0%, transparent 50%), radial-gradient(circle at 80% 20%, rgba(249, 115, 22, 0.15) 0%, transparent 50%)',
           }
         }}
       >
         <Box sx={{ position: 'relative', zIndex: 1, textAlign: 'center', maxWidth: 480 }}>
-          <Avatar sx={{ mx: 'auto', mb: 3, bgcolor: 'primary.main', width: 80, height: 80, boxShadow: '0 8px 24px rgba(59, 130, 246, 0.4)' }}>
+          <Avatar sx={{ mx: 'auto', mb: 3, bgcolor: 'primary.main', width: 80, height: 80, boxShadow: '0 8px 24px rgba(234, 88, 12, 0.4)' }}>
             <Business sx={{ fontSize: 40 }} />
           </Avatar>
           <Typography variant="h3" fontWeight={700} sx={{ mb: 2, textShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
@@ -99,7 +100,8 @@ export default function Login() {
                   minWidth: 140,
                   transition: 'all 0.3s',
                   '&:hover': {
-                    bgcolor: 'rgba(255, 255, 255, 0.1)',
+                    bgcolor: 'rgba(234, 88, 12, 0.15)',
+                    borderColor: 'rgba(234, 88, 12, 0.4)',
                     transform: 'translateY(-4px)'
                   }
                 }}
@@ -132,11 +134,10 @@ export default function Login() {
             borderRadius: 3,
             border: '1px solid',
             borderColor: 'divider',
-            boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+            boxShadow: '0 10px 25px -5px rgba(15, 23, 42, 0.08), 0 8px 10px -6px rgba(15, 23, 42, 0.04)',
             position: 'relative',
             overflow: 'hidden',
-            background: 'linear-gradient(135deg, rgba(30, 41, 59, 0.9) 0%, rgba(15, 23, 42, 0.9) 100%)',
-            backdropFilter: 'blur(10px)',
+            bgcolor: '#ffffff',
             '&::before': {
               content: '""',
               position: 'absolute',
@@ -144,12 +145,12 @@ export default function Login() {
               left: 0,
               right: 0,
               height: '4px',
-              background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)'
+              background: 'linear-gradient(90deg, #ea580c 0%, #f97316 100%)'
             }
           }}
         >
           <Box sx={{ textAlign: 'center', mb: 4 }}>
-            <Avatar sx={{ mx: 'auto', mb: 2, bgcolor: 'primary.main', width: 56, height: 56, boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)' }}>
+            <Avatar sx={{ mx: 'auto', mb: 2, bgcolor: 'primary.main', width: 56, height: 56, boxShadow: '0 4px 14px rgba(234, 88, 12, 0.3)' }}>
               <Business sx={{ fontSize: 28 }} />
             </Avatar>
             <Typography variant="h4" fontWeight={700} sx={{ mb: 1, color: 'text.primary' }}>Welcome Back</Typography>
@@ -159,7 +160,7 @@ export default function Login() {
           </Box>
 
           {error && (
-            <Alert severity="error" sx={{ mb: 3, borderRadius: 2, bgcolor: 'rgba(239, 68, 68, 0.1)' }}>
+            <Alert severity="error" sx={{ mb: 3, borderRadius: 2 }}>
               {error}
             </Alert>
           )}
@@ -212,9 +213,9 @@ export default function Login() {
                 textTransform: 'none', 
                 fontSize: 16,
                 fontWeight: 600,
-                boxShadow: '0 4px 12px rgba(59, 130, 246, 0.3)',
+                boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
                 '&:hover': {
-                  boxShadow: '0 6px 16px rgba(59, 130, 246, 0.4)'
+                  boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)'
                 }
               }}
             >

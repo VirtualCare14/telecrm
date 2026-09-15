@@ -57,6 +57,33 @@ export async function createCallLog(leadId, data) {
   return res.data.callLog;
 }
 
+// Walk-in records
+export async function listWalkIns(leadId) {
+  const res = await api.get(`/leads/${leadId}/walk-ins`);
+  return res.data.walkIns;
+}
+
+export async function createWalkIn(leadId, data) {
+  const res = await api.post(`/leads/${leadId}/walk-ins`, data);
+  return res.data;
+}
+
+// Demo records
+export async function listDemos(leadId) {
+  const res = await api.get(`/leads/${leadId}/demos`);
+  return res.data.demos;
+}
+
+export async function createDemo(leadId, data) {
+  const res = await api.post(`/leads/${leadId}/demos`, data);
+  return res.data;
+}
+
+export async function updateDemoStatus(leadId, demoId, data) {
+  const res = await api.patch(`/leads/${leadId}/demos/${demoId}/status`, data);
+  return res.data;
+}
+
 // Activities
 export async function listActivities(leadId) {
   const res = await api.get(`/leads/${leadId}/activities`);
@@ -73,3 +100,26 @@ export async function closeLost(leadId, data) {
   const res = await api.post(`/leads/${leadId}/close-lost`, data);
   return res.data;
 }
+
+export async function setOutcome(leadId, data) {
+  const res = await api.post(`/leads/${leadId}/outcome`, data);
+  return res.data;
+}
+
+// Reschedule follow-up
+export async function rescheduleFollowUp(leadId, data) {
+  const res = await api.patch(`/leads/${leadId}/follow-up`, data);
+  return res.data;
+}
+
+// Complete follow-up
+export async function completeFollowUp(leadId, data) {
+  const res = await api.patch(`/leads/${leadId}/complete-follow-up`, data);
+  return res.data;
+}
+
+// Re-engage / Reopen lead
+export async function reopenLead(leadId, data = {}) {
+  const res = await api.post(`/leads/${leadId}/reopen`, data);
+  return res.data;
+}

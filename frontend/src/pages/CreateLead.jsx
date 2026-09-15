@@ -28,12 +28,13 @@ export default function CreateLead() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
+  const isAdmin = user?.role === 'ADMIN' || (user?.agentRole && user.agentRole.toLowerCase() === 'admin');
 
   useEffect(() => {
-    if (user?.role === 'ADMIN') {
+    if (isAdmin) {
       getActiveAgents().then(setAgents).catch(() => {});
     }
-  }, [user]);
+  }, [isAdmin]);
 
   const handleFormChange = (field) => (e) => setForm((prev) => ({ ...prev, [field]: e.target.value }));
   const handleContactChange = (field) => (e) => setContact((prev) => ({ ...prev, [field]: e.target.value }));
@@ -75,10 +76,10 @@ export default function CreateLead() {
           altPhone: contact.altPhone,
           email: contact.email,
         }],
-        ...(user?.role === 'ADMIN' && selectedAgent ? { currentOwner: selectedAgent } : {}),
+        ...(isAdmin && selectedAgent ? { currentOwner: selectedAgent } : {}),
       };
       const lead = await createLead(payload);
-      navigate(`/leads/${lead._id}`);
+      navigate(isAdmin ? '/leads' : '/agent/leads');
     } catch (err) {
       if (err.validationErrors) {
         setFieldErrors(err.validationErrors);
@@ -95,12 +96,12 @@ export default function CreateLead() {
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3, flexWrap: 'wrap' }}>
         <Button 
           startIcon={<ArrowBack />} 
-          onClick={() => navigate('/leads')} 
+          onClick={() => navigate(isAdmin ? '/leads' : '/agent/leads')} 
           sx={{ 
             textTransform: 'none',
             borderRadius: 2,
             '&:hover': {
-              bgcolor: 'rgba(25, 118, 210, 0.08)'
+              bgcolor: 'rgba(234, 88, 12, 0.08)'
             }
           }}
         >
@@ -172,7 +173,7 @@ export default function CreateLead() {
                 </Select>
               </FormControl>
             </Grid>
-            {user?.role === 'ADMIN' && (
+            {isAdmin && (
               <Grid item xs={12} md={6}>
                 <FormControl fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}>
                   <InputLabel>Assign to Agent</InputLabel>
@@ -264,9 +265,9 @@ export default function CreateLead() {
                 borderRadius: 2, 
                 textTransform: 'none', 
                 px: 4,
-                boxShadow: '0 4px 12px rgba(25, 118, 210, 0.3)',
+                boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
                 '&:hover': {
-                  boxShadow: '0 6px 16px rgba(25, 118, 210, 0.4)'
+                  boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)'
                 }
               }}
             >

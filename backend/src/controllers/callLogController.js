@@ -19,24 +19,59 @@ exports.createCallLog = async (req, res, next) => {
     }
 
     // Authorization: Agents can only operate on their own leads
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: 'Forbidden: You can only record calls for leads assigned to you' });
     }
 
-    const contact = await ContactPerson.findById(calledContactId).session(session);
-    if (!contact || contact.lead.toString() !== leadId) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(400).json({ message: 'Invalid contact person for this lead' });
+    let contactId = null;
+    if (calledContactId && mongoose.Types.ObjectId.isValid(calledContactId)) {
+      const contact = await ContactPerson.findById(calledContactId).session(session);
+      if (contact && contact.lead.toString() === leadId) {
+        contactId = contact._id;
+      }
+    }
+
+    if (!contactId) {
+      const contactName = (req.body.calledContactName || req.body.contactName || (typeof calledContactId === 'string' && !mongoose.Types.ObjectId.isValid(calledContactId) ? calledContactId : '')).trim();
+      if (!contactName) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ message: 'Please select or enter a contact person' });
+      }
+
+      let contact = await ContactPerson.findOne({
+        lead: leadId,
+        name: new RegExp(`^${contactName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+      }).session(session);
+
+      if (!contact) {
+        const phone = (req.body.calledContactPhone || req.body.contactPhone || '').trim() || '—';
+        const hasPrimary = await ContactPerson.findOne({ lead: leadId, isPrimary: true }).session(session);
+        const createdContacts = await ContactPerson.create([{
+          lead: leadId,
+          name: contactName,
+          phone,
+          isPrimary: !hasPrimary,
+          createdBy: req.userId,
+        }], { session });
+        contact = createdContacts[0];
+
+        if (!lead.primaryContact || !hasPrimary) {
+          lead.primaryContact = contact._id;
+          await lead.save({ session });
+        }
+      }
+      contactId = contact._id;
     }
 
     const calledAtVal = calledAt ? new Date(calledAt) : new Date();
     const call = await CallLog.create([{
       lead: leadId,
       user: req.userId,
-      calledContact: calledContactId,
+      calledContact: contactId,
       calledAt: calledAtVal,
       disposition,
       remark,
@@ -83,7 +118,8 @@ exports.listCallLogs = async (req, res, next) => {
     const leadId = req.params.id;
     const lead = await Lead.findById(leadId);
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) return res.status(403).json({ message: 'Forbidden' });
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin && lead.currentOwner.toString() !== req.userId) return res.status(403).json({ message: 'Forbidden: You do not have access to this lead' });
 
     const logs = await CallLog.find({ lead: leadId }).sort({ createdAt: -1 }).populate('calledContact').populate('user', 'fullName');
     res.json({ logs });

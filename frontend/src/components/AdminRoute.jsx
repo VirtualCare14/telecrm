@@ -5,6 +5,7 @@ import { useAuthStore } from '../store/authStore';
 export default function AdminRoute() {
   const user = useAuthStore((s) => s.user);
   if (!user) return <Navigate to="/login" replace />;
-  if (user.role !== 'ADMIN') return <Navigate to="/unauthorized" replace />;
+  const isAdmin = user.role === 'ADMIN' || (user.agentRole && user.agentRole.toLowerCase() === 'admin');
+  if (!isAdmin) return <Navigate to="/agent" replace />;
   return <Outlet />;
 }

@@ -7,6 +7,7 @@ export const LEAD_SOURCES = [
 export const CALL_DISPOSITIONS = [
   'No Answer', 'Busy', 'Not Reachable', 'Switched Off',
   'Wrong Number', 'Connected', 'Call Back Later',
+  'Appointment Booked',
   'Decision Maker Unavailable', 'Referred to Another Person',
   'Interested', 'Not Interested', 'Follow-up Required',
   'Demo Requested', 'Proposal Discussion', 'Negotiation'

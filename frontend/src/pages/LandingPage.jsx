@@ -60,7 +60,7 @@ export default function LandingPage() {
       </AppBar>
 
       {/* Hero Section */}
-      <Box sx={{ bgcolor: 'primary.main', color: 'white', py: 12, textAlign: 'center' }}>
+      <Box sx={{ background: 'linear-gradient(135deg, #ea580c 0%, #c2410c 100%)', color: 'white', py: 12, textAlign: 'center' }}>
         <Container maxWidth="md">
           <Typography variant="h2" fontWeight={700} sx={{ mb: 3 }}>
             Welcome to TeleCRM
@@ -78,7 +78,9 @@ export default function LandingPage() {
               textTransform: 'none',
               bgcolor: 'white',
               color: 'primary.main',
-              '&:hover': { bgcolor: 'grey.100' },
+              fontWeight: 600,
+              boxShadow: '0 4px 14px rgba(0,0,0,0.15)',
+              '&:hover': { bgcolor: '#fff7ed', color: '#c2410c' },
               px: 4,
               py: 1.5
             }}
@@ -102,10 +104,11 @@ export default function LandingPage() {
                   borderRadius: 3,
                   border: '1px solid',
                   borderColor: 'divider',
+                  bgcolor: '#ffffff',
                   transition: 'all 0.2s',
                   '&:hover': {
                     transform: 'translateY(-4px)',
-                    boxShadow: 4,
+                    boxShadow: '0 12px 24px -4px rgba(234, 88, 12, 0.15), 0 8px 16px -6px rgba(15, 23, 42, 0.05)',
                     borderColor: 'primary.main'
                   }
                 }}

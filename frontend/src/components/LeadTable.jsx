@@ -59,12 +59,13 @@ export default function LeadTable({ leads, loading }) {
             </TableRow>
           ) : leads.map((l) => {
             const isOverdue = l.nextFollowUpAt && l.closureStatus === 'OPEN' && new Date(l.nextFollowUpAt) < new Date();
+            const isUpcoming = l.nextFollowUpAt && l.closureStatus === 'OPEN' && new Date(l.nextFollowUpAt) >= new Date();
             const isClosed = l.closureStatus !== 'OPEN';
             return (
               <TableRow
                 key={l._id}
                 hover
-                sx={{ cursor: 'pointer', '&:hover': { bgcolor: 'rgba(255,255,255,0.04)' } }}
+                sx={{ cursor: 'pointer', '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.04)' } }}
                 onClick={() => navigate(`/leads/${l._id}`)}
               >
                 <TableCell>
@@ -87,11 +88,40 @@ export default function LeadTable({ leads, loading }) {
                 </TableCell>
                 <TableCell>
                   {l.nextFollowUpAt ? (
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                      <Typography sx={{ fontSize: 12 }} color={isOverdue ? 'error' : 'text.secondary'}>
+                    <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.75, flexWrap: 'nowrap' }}>
+                      <Typography
+                        sx={{
+                          fontSize: 12,
+                          fontWeight: 500,
+                          color: isOverdue ? 'error.main' : isUpcoming ? '#38bdf8' : 'text.secondary',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
                         {formatDateTime(l.nextFollowUpAt)}
                       </Typography>
-                      {isOverdue && <Chip label="Overdue" size="small" color="error" sx={{ height: 20, fontSize: 10 }} />}
+                      {isOverdue && (
+                        <Chip
+                          label="Overdue"
+                          size="small"
+                          color="error"
+                          sx={{ height: 20, fontSize: 10, fontWeight: 600, borderRadius: 1.5 }}
+                        />
+                      )}
+                      {isUpcoming && (
+                        <Chip
+                          label="Upcoming"
+                          size="small"
+                          sx={{
+                            height: 20,
+                            fontSize: 10,
+                            fontWeight: 600,
+                            borderRadius: 1.5,
+                            bgcolor: 'rgba(56, 189, 248, 0.15)',
+                            color: '#38bdf8',
+                            border: '1px solid rgba(56, 189, 248, 0.35)',
+                          }}
+                        />
+                      )}
                     </Box>
                   ) : (
                     <Typography sx={{ fontSize: 12 }} color="text.secondary">—</Typography>
@@ -104,10 +134,25 @@ export default function LeadTable({ leads, loading }) {
                       label={l.closureStatus}
                       size="small"
                       color={l.closureStatus === 'WON' ? 'success' : 'error'}
-                      sx={{ height: 22, fontSize: 11, fontWeight: 600 }}
+                      clickable
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/leads/${l._id}`);
+                      }}
+                      sx={{ height: 22, fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
                     />
                   ) : (
-                    <Chip label="Open" size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} />
+                    <Chip
+                      label="Open"
+                      size="small"
+                      variant="outlined"
+                      clickable
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/leads/${l._id}`);
+                      }}
+                      sx={{ height: 22, fontSize: 11, cursor: 'pointer' }}
+                    />
                   )}
                 </TableCell>
               </TableRow>
