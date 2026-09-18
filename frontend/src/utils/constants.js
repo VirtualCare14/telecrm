@@ -1,7 +1,5 @@
 export const LEAD_SOURCES = [
-  'Instagram', 'Facebook', 'Meta Ads', 'LinkedIn',
-  'Google', 'Google Ads', 'Website', 'Referral',
-  'Cold Calling', 'Email', 'WhatsApp', 'Event', 'Other'
+  'Google', 'Referral', 'Manually', 'Virtually', 'Other'
 ];
 
 export const CALL_DISPOSITIONS = [

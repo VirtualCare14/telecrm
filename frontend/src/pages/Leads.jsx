@@ -3,22 +3,26 @@ import {
   Box, Typography, TextField, Button, FormControl, InputLabel,
   Select, MenuItem, Pagination, Paper, Grid, Alert
 } from '@mui/material';
-import { Add, Search as SearchIcon, Clear } from '@mui/icons-material';
+import { Add, Search as SearchIcon, Clear, CloudUpload } from '@mui/icons-material';
 import LeadTable from '../components/LeadTable';
+import ImportLeadsModal from '../components/ImportLeadsModal';
 import { listLeads } from '../services/leadsService';
 import { getAgents } from '../services/agentService';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { DATE_FILTERS } from '../utils/constants';
 import { getDateRangeFromFilter } from '../utils/dateHelpers';
 
 export default function Leads() {
   const navigate = useNavigate();
+  const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const [searchParams] = useSearchParams();
 
   const [leads, setLeads] = useState([]);
   const [search, setSearch] = useState('');
+  const [alertInfo, setAlertInfo] = useState(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [ownerFilter, setOwnerFilter] = useState(() => {
     const unassigned = searchParams.get('unassigned');
     const owner = searchParams.get('owner');
@@ -36,6 +40,7 @@ export default function Leads() {
   const [pageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [importModalOpen, setImportModalOpen] = useState(false);
 
   const buildParams = useCallback(() => {
     const params = { search, page, limit: pageSize };
@@ -78,6 +83,22 @@ export default function Leads() {
     }
   }, [user]);
 
+  // Handle navigation alert (e.g. redirected after deleting a lead)
+  useEffect(() => {
+    if (location.state?.alert) {
+      setAlertInfo(location.state.alert);
+      window.history.replaceState({}, document.title);
+    }
+  }, [location.state]);
+
+  const handleLeadDeleted = (deletedLead) => {
+    setAlertInfo({
+      type: 'success',
+      message: `Lead "${deletedLead.organizationName || deletedLead.leadNumber}" and all associated records were deleted successfully.`
+    });
+    setRefreshTrigger((prev) => prev + 1);
+  };
+
   // Auto-fetch when filters change, with cancellation to prevent stale response race conditions
   useEffect(() => {
     let isCurrent = true;
@@ -108,7 +129,7 @@ export default function Leads() {
     return () => {
       isCurrent = false;
     };
-  }, [page, ownerFilter, dateFilter, closureFilter, followUpFilter, customStart, customEnd, buildParams]);
+  }, [page, ownerFilter, dateFilter, closureFilter, followUpFilter, customStart, customEnd, refreshTrigger, buildParams]);
 
   // Handle search - use debounce for search text
   useEffect(() => {
@@ -169,22 +190,53 @@ export default function Leads() {
         <Typography variant="h4" fontWeight={700} sx={{ color: 'text.primary' }}>
           Leads
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<Add />}
-          onClick={() => navigate('/leads/create')}
-          sx={{ 
-            borderRadius: 2, 
-            textTransform: 'none',
-            boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
-            '&:hover': {
-              boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)'
-            }
-          }}
-        >
-          Create Lead
-        </Button>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+          <Button
+            variant="outlined"
+            startIcon={<CloudUpload sx={{ color: '#107c41' }} />}
+            onClick={() => setImportModalOpen(true)}
+            sx={{ 
+              borderRadius: 2, 
+              textTransform: 'none',
+              borderColor: '#107c41',
+              color: '#107c41',
+              fontWeight: 600,
+              '&:hover': {
+                borderColor: '#0b582e',
+                bgcolor: 'rgba(16, 124, 65, 0.05)'
+              }
+            }}
+          >
+            Import from Excel
+          </Button>
+
+          <Button
+            variant="contained"
+            startIcon={<Add />}
+            onClick={() => navigate('/leads/create')}
+            sx={{ 
+              borderRadius: 2, 
+              textTransform: 'none',
+              boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
+              '&:hover': {
+                boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)'
+              }
+            }}
+          >
+            Create Lead
+          </Button>
+        </Box>
       </Box>
+
+      {/* Import Modal */}
+      <ImportLeadsModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onSuccess={() => {
+          setImportModalOpen(false);
+          setRefreshTrigger((prev) => prev + 1);
+        }}
+      />
 
       {/* Filters - auto apply on change */}
       <Paper elevation={0} sx={{ 
@@ -280,6 +332,16 @@ export default function Leads() {
         </Grid>
       </Paper>
 
+      {alertInfo && (
+        <Alert
+          severity={alertInfo.type || 'info'}
+          onClose={() => setAlertInfo(null)}
+          sx={{ mb: 2, borderRadius: 2 }}
+        >
+          {alertInfo.message}
+        </Alert>
+      )}
+
       {error && (
         <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }}>
           {error}
@@ -287,7 +349,7 @@ export default function Leads() {
       )}
 
       <Paper elevation={0} sx={{ borderRadius: 3, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-        <LeadTable leads={leads} loading={loading} />
+        <LeadTable leads={leads} loading={loading} onLeadDeleted={handleLeadDeleted} />
       </Paper>
 
       {totalPages > 1 && (

@@ -1,20 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import {
   Box, Typography, TextField, Button, Grid, Alert, Paper,
-  FormControl, InputLabel, Select, MenuItem, Chip, Divider, CircularProgress
+  FormControl, InputLabel, Select, MenuItem, Chip, Divider, CircularProgress, FormHelperText
 } from '@mui/material';
-import { ArrowBack, Business, CheckCircle, Warning } from '@mui/icons-material';
+import { ArrowBack, Business, CheckCircle, Warning, InsertDriveFile, FileDownload, CloudUpload } from '@mui/icons-material';
 import { createLead, checkDuplicates } from '../services/leadsService';
 import { getActiveAgents } from '../services/agentService';
 import { useNavigate } from 'react-router-dom';
 import { LEAD_SOURCES, INDUSTRIES, ORGANIZATION_TYPES } from '../utils/constants';
 import { useAuthStore } from '../store/authStore';
+import ImportLeadsModal from '../components/ImportLeadsModal';
+import { downloadExcelTemplate } from '../utils/excelImportHelper';
 
 export default function CreateLead() {
   const user = useAuthStore((s) => s.user);
   const [form, setForm] = useState({
     organizationName: '', industry: '', organizationType: '', address: '', leadSource: '',
   });
+  const [customSource, setCustomSource] = useState('');
+  const [remarks, setRemarks] = useState('');
   const [contact, setContact] = useState({
     name: '', designation: '', phone: '', altPhone: '', email: '',
   });
@@ -27,6 +31,7 @@ export default function CreateLead() {
   const [createError, setCreateError] = useState(null);
   const [fieldErrors, setFieldErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
   const navigate = useNavigate();
   const isAdmin = user?.role === 'ADMIN' || (user?.agentRole && user.agentRole.toLowerCase() === 'admin');
 
@@ -61,14 +66,29 @@ export default function CreateLead() {
     e.preventDefault();
     setCreateError(null);
     setFieldErrors({});
+
+    const newFieldErrors = {};
+    if (!form.leadSource) {
+      newFieldErrors.leadSource = 'Lead Source is required';
+    } else if (form.leadSource === 'Other' && !customSource.trim()) {
+      newFieldErrors.customSource = 'Please specify source';
+    }
+
+    if (Object.keys(newFieldErrors).length > 0) {
+      setFieldErrors(newFieldErrors);
+      return;
+    }
+
     setSubmitting(true);
     try {
+      const finalLeadSource = form.leadSource === 'Other' ? customSource.trim() : form.leadSource;
       const payload = {
         organizationName: form.organizationName,
         industry: form.industry,
         organizationType: form.organizationType,
         address: form.address,
-        leadSource: form.leadSource,
+        leadSource: finalLeadSource,
+        remarks: remarks.trim(),
         contacts: [{
           name: contact.name,
           designation: contact.designation,
@@ -93,24 +113,75 @@ export default function CreateLead() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 3, flexWrap: 'wrap' }}>
-        <Button 
-          startIcon={<ArrowBack />} 
-          onClick={() => navigate(isAdmin ? '/leads' : '/agent/leads')} 
-          sx={{ 
-            textTransform: 'none',
-            borderRadius: 2,
-            '&:hover': {
-              bgcolor: 'rgba(234, 88, 12, 0.08)'
-            }
-          }}
-        >
-          Back
-        </Button>
-        <Typography variant="h4" fontWeight={700} sx={{ color: 'text.primary' }}>
-          Create New Lead
-        </Typography>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 3, flexWrap: 'wrap', gap: 2 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Button 
+            startIcon={<ArrowBack />} 
+            onClick={() => navigate(isAdmin ? '/leads' : '/agent/leads')} 
+            sx={{ 
+              textTransform: 'none',
+              borderRadius: 2,
+              '&:hover': {
+                bgcolor: 'rgba(234, 88, 12, 0.08)'
+              }
+            }}
+          >
+            Back
+          </Button>
+          <Typography variant="h4" fontWeight={700} sx={{ color: 'text.primary' }}>
+            Create New Lead
+          </Typography>
+        </Box>
+
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+          <Button
+            variant="outlined"
+            startIcon={<FileDownload sx={{ color: '#107c41' }} />}
+            onClick={downloadExcelTemplate}
+            sx={{
+              textTransform: 'none',
+              borderRadius: 2,
+              borderColor: '#107c41',
+              color: '#107c41',
+              fontWeight: 600,
+              '&:hover': {
+                borderColor: '#0b582e',
+                bgcolor: 'rgba(16, 124, 65, 0.05)'
+              }
+            }}
+          >
+            Download Template
+          </Button>
+
+          <Button
+            variant="contained"
+            startIcon={<CloudUpload />}
+            onClick={() => setImportModalOpen(true)}
+            sx={{
+              textTransform: 'none',
+              borderRadius: 2,
+              bgcolor: '#107c41',
+              boxShadow: '0 4px 12px rgba(16, 124, 65, 0.25)',
+              '&:hover': {
+                bgcolor: '#0b582e',
+                boxShadow: '0 6px 16px rgba(16, 124, 65, 0.35)'
+              }
+            }}
+          >
+            Import Leads from Excel
+          </Button>
+        </Box>
       </Box>
+
+      {/* Import Modal */}
+      <ImportLeadsModal
+        open={importModalOpen}
+        onClose={() => setImportModalOpen(false)}
+        onSuccess={() => {
+          setImportModalOpen(false);
+          navigate(isAdmin ? '/leads' : '/agent/leads');
+        }}
+      />
 
       <Paper elevation={0} sx={{ 
         p: 3, 
@@ -164,15 +235,49 @@ export default function CreateLead() {
               />
             </Grid>
             <Grid item xs={12} md={6}>
-              <FormControl fullWidth required sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}>
-                <InputLabel>Lead Source</InputLabel>
-                <Select value={form.leadSource} label="Lead Source" onChange={handleFormChange('leadSource')}>
+              <FormControl fullWidth required error={Boolean(fieldErrors.leadSource)} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}>
+                <InputLabel id="create-lead-source-label">Lead Source</InputLabel>
+                <Select
+                  labelId="create-lead-source-label"
+                  value={form.leadSource}
+                  label="Lead Source"
+                  onChange={(e) => {
+                    handleFormChange('leadSource')(e);
+                    if (e.target.value !== 'Other') {
+                      setCustomSource('');
+                    }
+                    if (fieldErrors.leadSource || fieldErrors.customSource) {
+                      setFieldErrors((prev) => ({ ...prev, leadSource: undefined, customSource: undefined }));
+                    }
+                  }}
+                >
                   {LEAD_SOURCES.map((src) => (
                     <MenuItem key={src} value={src}>{src}</MenuItem>
                   ))}
                 </Select>
+                {fieldErrors.leadSource && <FormHelperText>{fieldErrors.leadSource}</FormHelperText>}
               </FormControl>
             </Grid>
+            {form.leadSource === 'Other' && (
+              <Grid item xs={12} md={6}>
+                <TextField
+                  fullWidth
+                  required
+                  label="Please specify source"
+                  placeholder="Please specify source"
+                  value={customSource}
+                  onChange={(e) => {
+                    setCustomSource(e.target.value);
+                    if (fieldErrors.customSource) {
+                      setFieldErrors((prev) => ({ ...prev, customSource: undefined }));
+                    }
+                  }}
+                  error={Boolean(fieldErrors.customSource)}
+                  helperText={fieldErrors.customSource}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                />
+              </Grid>
+            )}
             {isAdmin && (
               <Grid item xs={12} md={6}>
                 <FormControl fullWidth sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}>
@@ -186,6 +291,18 @@ export default function CreateLead() {
                 </FormControl>
               </Grid>
             )}
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                multiline
+                rows={3}
+                label="Remarks"
+                placeholder="Enter remarks or additional notes..."
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
           </Grid>
 
           <Divider sx={{ my: 3 }} />

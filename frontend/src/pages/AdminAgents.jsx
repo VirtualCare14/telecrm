@@ -6,8 +6,8 @@ import {
   Chip, Grid, TableContainer, Avatar, FormControl, InputLabel,
   Select, MenuItem
 } from '@mui/material';
-import { Add, Edit, Lock, Refresh } from '@mui/icons-material';
-import { getAgents, createAgent, updateAgent, changeAgentStatus, changeAgentPassword, forceLogoutAgent } from '../services/agentService';
+import { Add, Edit, Lock, Refresh, Delete } from '@mui/icons-material';
+import { getAgents, createAgent, updateAgent, changeAgentStatus, changeAgentPassword, forceLogoutAgent, deleteAgent } from '../services/agentService';
 import { getRoles } from '../services/roleService';
 
 const getDisplayPhone = (phone) => {
@@ -72,6 +72,11 @@ export default function AdminAgents() {
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ id: '', newPassword: '' });
   const [passwordError, setPasswordError] = useState(null);
+
+  // Delete Agent dialog
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [agentToDelete, setAgentToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchRolesList = async () => {
     try {
@@ -277,6 +282,27 @@ export default function AdminAgents() {
     setPasswordOpen(true);
   };
 
+  const openDelete = (agent) => {
+    setAgentToDelete(agent);
+    setDeleteOpen(true);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!agentToDelete) return;
+    setDeleting(true);
+    try {
+      await deleteAgent(agentToDelete._id);
+      setDeleteOpen(false);
+      setSuccess(`Agent ${agentToDelete.fullName || agentToDelete.username} and associated data deleted successfully`);
+      setAgentToDelete(null);
+      await fetchAgents();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to delete agent');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3, flexWrap: 'wrap', gap: 2 }}>
@@ -389,7 +415,7 @@ export default function AdminAgents() {
                   <TableCell align="center" sx={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', minWidth: 140 }}>Overdue Follow-ups</TableCell>
                   <TableCell align="center" sx={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', minWidth: 120 }}>Conversion Rate</TableCell>
                   <TableCell sx={{ fontWeight: 600, fontSize: 13, whiteSpace: 'nowrap', minWidth: 150 }}>Last Login</TableCell>
-                  <TableCell sx={{ fontWeight: 600, fontSize: 13, textAlign: 'center', whiteSpace: 'nowrap', minWidth: 220 }}>Actions</TableCell>
+                  <TableCell sx={{ fontWeight: 600, fontSize: 13, textAlign: 'center', whiteSpace: 'nowrap', minWidth: 260 }}>Actions</TableCell>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -512,10 +538,10 @@ export default function AdminAgents() {
                     <TableCell sx={{ whiteSpace: 'nowrap', minWidth: 150 }}>
                       {agent.lastLoginAt ? new Date(agent.lastLoginAt).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'}
                     </TableCell>
-                    <TableCell sx={{ whiteSpace: 'nowrap', minWidth: 220 }}>
+                    <TableCell sx={{ whiteSpace: 'nowrap', minWidth: 260 }}>
                       <Box sx={{ display: 'flex', gap: 0.5, justifyContent: 'center', alignItems: 'center', flexWrap: 'nowrap' }}>
-                        <Button size="small" variant="text" onClick={() => openEdit(agent)} sx={{ color: 'primary.main' }}><Edit fontSize="small" /></Button>
-                        <Button size="small" variant="text" onClick={() => openPassword(agent)} sx={{ color: 'warning.main' }}><Lock fontSize="small" /></Button>
+                        <Button size="small" variant="text" onClick={() => openEdit(agent)} sx={{ color: 'primary.main', minWidth: 'auto', p: 0.5 }} title="Edit Agent"><Edit fontSize="small" /></Button>
+                        <Button size="small" variant="text" onClick={() => openPassword(agent)} sx={{ color: 'warning.main', minWidth: 'auto', p: 0.5 }} title="Change Password"><Lock fontSize="small" /></Button>
                         <Button
                           size="small"
                           variant="outlined"
@@ -533,6 +559,16 @@ export default function AdminAgents() {
                           sx={{ textTransform: 'none', fontSize: 11, whiteSpace: 'nowrap' }}
                         >
                           Force Logout
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="text"
+                          color="error"
+                          onClick={() => openDelete(agent)}
+                          sx={{ minWidth: 'auto', p: 0.5 }}
+                          title="Delete Agent & Data"
+                        >
+                          <Delete fontSize="small" />
                         </Button>
                       </Box>
                     </TableCell>
@@ -776,6 +812,41 @@ export default function AdminAgents() {
         <DialogActions sx={{ p: 2 }}>
           <Button onClick={() => setPasswordOpen(false)} sx={{ borderRadius: 2, textTransform: 'none' }}>Cancel</Button>
           <Button variant="contained" onClick={handlePassword} disabled={!passwordForm.newPassword || passwordForm.newPassword.length < 6} sx={{ borderRadius: 2, textTransform: 'none' }}>Change</Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete Agent Confirmation Dialog */}
+      <Dialog
+        open={deleteOpen}
+        onClose={() => !deleting && setDeleteOpen(false)}
+        maxWidth="xs"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle sx={{ fontWeight: 600, color: 'error.main' }}>
+          Delete Agent & Associated Data
+        </DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" sx={{ mb: 2, color: 'text.primary' }}>
+            Are you sure you want to permanently delete agent <strong>{agentToDelete?.fullName || agentToDelete?.username}</strong>?
+          </Typography>
+          <Alert severity="warning" sx={{ borderRadius: 2 }}>
+            This action is irreversible. All leads, activities, call logs, demos, sessions, and records associated with this agent will be permanently removed.
+          </Alert>
+        </DialogContent>
+        <DialogActions sx={{ p: 2, pt: 0 }}>
+          <Button onClick={() => setDeleteOpen(false)} disabled={deleting} sx={{ borderRadius: 2, textTransform: 'none' }}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            onClick={handleConfirmDelete}
+            disabled={deleting}
+            sx={{ borderRadius: 2, textTransform: 'none', boxShadow: '0 4px 12px rgba(239, 68, 68, 0.25)' }}
+          >
+            {deleting ? 'Deleting...' : 'Delete Permanently'}
+          </Button>
         </DialogActions>
       </Dialog>
     </Box>

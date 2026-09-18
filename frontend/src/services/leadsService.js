@@ -122,4 +122,51 @@ export async function completeFollowUp(leadId, data) {
 export async function reopenLead(leadId, data = {}) {
   const res = await api.post(`/leads/${leadId}/reopen`, data);
   return res.data;
-}
+}
+
+// Update walk-in status
+export async function updateWalkInStatus(leadId, walkInId, data) {
+  const res = await api.patch(`/leads/${leadId}/walk-ins/${walkInId}/status`, data);
+  return res.data;
+}
+
+// Sales follow-up records
+export async function listSalesFollowUps(leadId) {
+  const res = await api.get(`/leads/${leadId}/sales-follow-ups`);
+  return res.data.followUps;
+}
+
+export async function createSalesFollowUp(leadId, data) {
+  const res = await api.post(`/leads/${leadId}/sales-follow-ups`, data);
+  return res.data;
+}
+
+export async function updateSalesFollowUpStatus(leadId, followUpId, data) {
+  const res = await api.patch(`/leads/${leadId}/sales-follow-ups/${followUpId}/status`, data);
+  return res.data;
+}
+
+// Assigned activities for Sales Agent Workspace
+export async function getAssignedActivities(params = {}) {
+  const res = await api.get('/agents/assigned-activities', { params });
+  return res.data;
+}
+
+// Immediate Lead Transfer
+export async function transferLead(leadId, data) {
+  const res = await api.post(`/leads/${leadId}/transfer`, data);
+  return res.data;
+}
+
+// Delete Lead (Admin only)
+export async function deleteLead(leadId) {
+  const res = await api.delete(`/leads/${leadId}`);
+  return res.data;
+}
+
+// CRM WhatsApp Activity
+export async function sendWhatsAppActivity(leadId, data) {
+  const res = await api.post(`/leads/${leadId}/whatsapp`, data);
+  return res.data;
+}
+

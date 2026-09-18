@@ -169,6 +169,7 @@ export default function AppLayout({ children }) {
     navItems.push(
       { label: 'Dashboard', icon: <Dashboard />, path: '/agent' },
       { label: 'My Leads', icon: <Business />, path: '/agent/leads' },
+      { label: 'Transfers', icon: <Send />, path: '/transfer-requests' },
     );
   }
 

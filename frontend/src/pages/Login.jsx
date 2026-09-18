@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import {
   Box, Paper, TextField, Button, Typography, Alert,
-  InputAdornment, IconButton, Avatar, CircularProgress
+  InputAdornment, IconButton, Avatar, CircularProgress,
+  Chip, Stack
 } from '@mui/material';
 import { Visibility, VisibilityOff, Business } from '@mui/icons-material';
 import { login } from '../services/authService';
@@ -21,8 +22,9 @@ export default function Login() {
     e.preventDefault();
     setError(null);
     setLoading(true);
+    const trimmedInput = (usernameOrEmail || '').trim();
     try {
-      const { user, accessTokenExpiresAt } = await login(usernameOrEmail, password);
+      const { user, accessTokenExpiresAt } = await login(trimmedInput, password);
       setAuth(user, accessTokenExpiresAt);
       const isAdmin = user.role === 'ADMIN' || (user.agentRole && user.agentRole.toLowerCase() === 'admin');
       if (isAdmin) navigate('/admin');
@@ -223,7 +225,43 @@ export default function Login() {
             </Button>
           </Box>
 
-          <Box sx={{ mt: 3, textAlign: 'center' }}>
+          {/* Quick Fill Credentials Helper */}
+          <Box sx={{ mt: 3, pt: 2.5, borderTop: '1px dashed', borderColor: 'divider' }}>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1.5, fontWeight: 600, textAlign: 'center' }}>
+              Quick Fill Credentials (Click to load):
+            </Typography>
+            <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap" useFlexGap sx={{ gap: 1 }}>
+              <Chip
+                size="small"
+                label="Sales Agent (Prince)"
+                onClick={() => { setUsernameOrEmail('Prince0908'); setPassword('Prince@1402'); setError(null); }}
+                sx={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, borderRadius: 1.5 }}
+                color="warning"
+                variant="outlined"
+              />
+              <Chip
+                size="small"
+                label="Calling Agent (Jyoti)"
+                onClick={() => { setUsernameOrEmail('jyoti0411'); setPassword('Jyoti@1402'); setError(null); }}
+                sx={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, borderRadius: 1.5 }}
+                color="info"
+                variant="outlined"
+              />
+              <Chip
+                size="small"
+                label="Admin"
+                onClick={() => { setUsernameOrEmail('admin'); setPassword('Admin123!'); setError(null); }}
+                sx={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, borderRadius: 1.5 }}
+                color="primary"
+                variant="outlined"
+              />
+            </Stack>
+            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1.5, textAlign: 'center', fontSize: 11 }}>
+              💡 Admin: Admin123! | Calling Agent: Jyoti@1402 | Sales Agent: Prince@1402
+            </Typography>
+          </Box>
+
+          <Box sx={{ mt: 2.5, textAlign: 'center' }}>
             <Typography variant="caption" color="text.secondary">
               © 2024 TeleCRM. All rights reserved.
             </Typography>

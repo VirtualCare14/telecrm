@@ -6,6 +6,7 @@ const validate = require('../middlewares/validate');
 const agentValidator = require('../validators/agent');
 
 router.get('/active', authenticate, authorizeRole(['ADMIN', 'AGENT']), agentCtrl.getActiveAgents);
+router.get('/assigned-activities', authenticate, agentCtrl.getAssignedActivities);
 
 // Admin-only agent management
 router.use(authenticate, authorizeRole(['ADMIN']));
@@ -17,5 +18,6 @@ router.put('/:id', agentCtrl.updateAgent);
 router.patch('/:id/status', agentCtrl.changeStatus);
 router.patch('/:id/password', agentCtrl.changePassword);
 router.post('/:id/force-logout', agentCtrl.forceLogout);
+router.delete('/:id', agentCtrl.deleteAgent);
 
 module.exports = router;

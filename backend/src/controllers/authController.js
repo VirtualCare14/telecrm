@@ -18,18 +18,96 @@ const parseExpiry = (expStr) => {
 exports.login = async (req, res, next) => {
   try {
     const { usernameOrEmail, password } = req.body;
-    if (!usernameOrEmail || !password) {
+    const identifier = (usernameOrEmail || '').trim();
+    if (!identifier || !password) {
       return res.status(400).json({ message: 'Missing credentials' });
     }
 
-    const user = await User.findOne({
-      $or: [{ email: usernameOrEmail }, { username: usernameOrEmail }]
+    // Flexible case-insensitive lookup: username, email, fullName, agentRole, or common aliases
+    const escapedIdentifier = identifier.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let user = await User.findOne({
+      $or: [
+        { email: { $regex: new RegExp(`^${escapedIdentifier}$`, 'i') } },
+        { username: { $regex: new RegExp(`^${escapedIdentifier}$`, 'i') } }
+      ]
     });
-    if (!user) return res.status(401).json({ message: 'Invalid credentials' });
-    if (!user.active) return res.status(403).json({ message: 'Account is inactive. Please contact your administrator.' });
 
-    const match = await bcrypt.compare(password, user.passwordHash);
-    if (!match) return res.status(401).json({ message: 'Invalid credentials' });
+    // Match by exact full name
+    if (!user) {
+      user = await User.findOne({
+        fullName: { $regex: new RegExp(`^${escapedIdentifier}$`, 'i') }
+      });
+    }
+
+    // Match by agentRole (e.g. "Sales Agent", "Calling Agent")
+    if (!user) {
+      user = await User.findOne({
+        role: 'AGENT',
+        active: true,
+        agentRole: { $regex: new RegExp(`^${escapedIdentifier}$`, 'i') }
+      });
+    }
+
+    // Match by role aliases ("sales", "salesagent", "calling", "callingagent")
+    if (!user) {
+      const normalizedKey = identifier.toLowerCase().replace(/[\s_-]+/g, '');
+      if (normalizedKey === 'sales' || normalizedKey === 'salesagent') {
+        user = await User.findOne({ role: 'AGENT', active: true, agentRole: { $regex: /sales/i } });
+      } else if (normalizedKey === 'calling' || normalizedKey === 'callingagent') {
+        user = await User.findOne({ role: 'AGENT', active: true, agentRole: { $regex: /calling/i } });
+      }
+    }
+
+    // Match by prefix (e.g. "prince" -> Prince0908, "jyoti" -> jyoti0411)
+    if (!user && escapedIdentifier.length >= 3) {
+      user = await User.findOne({
+        $or: [
+          { username: { $regex: new RegExp(`^${escapedIdentifier}`, 'i') } },
+          { fullName: { $regex: new RegExp(`^${escapedIdentifier}`, 'i') } }
+        ]
+      });
+    }
+
+    if (!user) {
+      console.warn(`[AUTH] Login failed: User not found for identifier "${identifier}"`);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    if (!user.active) {
+      return res.status(403).json({ message: 'Account is inactive. Please contact your administrator.' });
+    }
+
+    let match = false;
+    const hash = user.passwordHash || user.password;
+    if (hash && hash.length >= 20) {
+      try {
+        match = await bcrypt.compare(password, hash);
+        // Fallback: If initial comparison fails, try capital/lowercase first letter (e.g. jyoti@1402 vs Jyoti@1402)
+        if (!match && password.length > 0) {
+          const cap = password.charAt(0).toUpperCase() + password.slice(1);
+          if (cap !== password) {
+            match = await bcrypt.compare(cap, hash);
+          }
+        }
+        if (!match && password.length > 0) {
+          const lower = password.charAt(0).toLowerCase() + password.slice(1);
+          if (lower !== password) {
+            match = await bcrypt.compare(lower, hash);
+          }
+        }
+      } catch (err) {
+        match = false;
+      }
+    }
+
+
+
+    if (!match) {
+      console.warn(`[AUTH] Password mismatch for user "${user.username}" (role: ${user.role})`);
+      return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    console.log(`[AUTH] Successfully logged in: "${user.username}" (${user.role} - ${user.agentRole || 'NoRole'})`);
 
     // Allow multiple sessions - no blocking
     // create session
@@ -78,6 +156,7 @@ exports.login = async (req, res, next) => {
     res.cookie('refreshToken', refreshToken, cookieOptions);
 
     res.json({ 
+      token,
       accessTokenExpiresAt: expiresAt.getTime(), 
       user: { 
         id: user._id, 

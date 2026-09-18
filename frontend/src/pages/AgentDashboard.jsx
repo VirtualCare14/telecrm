@@ -64,19 +64,32 @@ import {
   CheckCircle,
   Add,
   KeyboardArrowDown,
+  SwapHoriz,
+  Send,
+  PersonAdd,
+  AssignmentInd,
+  WhatsApp as WhatsAppIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { logout } from '../services/authService';
 import { getAgentDashboard } from '../services/dashboardService';
-import { listLeads, createCallLog, createWalkIn, createDemo, updateDemoStatus, closeWon, closeLost } from '../services/leadsService';
+import { 
+  listLeads, createCallLog, createWalkIn, createDemo, updateDemoStatus, 
+  closeWon, closeLost, getAssignedActivities, updateWalkInStatus, 
+  updateSalesFollowUpStatus, rescheduleFollowUp, completeFollowUp,
+  createSalesFollowUp, transferLead, sendWhatsAppActivity
+} from '../services/leadsService';
+import { getActiveAgents } from '../services/agentService';
 import { formatDate, formatTime, isOverdue, isUpcoming, formatDateToYYYYMMDD, getFollowUpStatus } from '../utils/dateHelpers';
 import { CALL_DISPOSITIONS, LOST_REASONS } from '../utils/constants';
 import { getNextAction } from '../utils/nextActionHelper';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
+import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveSalesAgentForLead } from '../utils/whatsappHelper';
 import KpiCard from '../components/dashboard/KpiCard';
 import TodayActionsSection from '../components/dashboard/TodayActionsSection';
 import RecentActivitySection from '../components/dashboard/RecentActivitySection';
+import AssignedActivitiesSection from '../components/dashboard/AssignedActivitiesSection';
 
 // Helper for demo status badges
 const getDemoStatusStyle = (status) => {
@@ -124,6 +137,15 @@ export default function AgentDashboard() {
   const user = useAuthStore((s) => s.user);
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const navigate = useNavigate();
+
+  const agentName = user?.fullName || user?.username || 'Agent';
+  const agentRole = user?.agentRole || 'Calling Agent';
+  const isSalesAgent = agentRole?.toLowerCase() === 'sales agent';
+
+  // Assigned Activities State for Sales Agent Workspace
+  const [assignedActivities, setAssignedActivities] = useState([]);
+  const [assignedSummary, setAssignedSummary] = useState({});
+  const [assignedLoading, setAssignedLoading] = useState(false);
 
   // State
   const [leads, setLeads] = useState([]);
@@ -185,6 +207,56 @@ export default function AgentDashboard() {
   const [savingOutcome, setSavingOutcome] = useState(false);
   const [outcomeError, setOutcomeError] = useState(null);
 
+  // Active Agents list for transfer and assignment
+  const [activeAgentsList, setActiveAgentsList] = useState([]);
+
+  // Transfer Lead Modal State
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [selectedTransferLead, setSelectedTransferLead] = useState(null);
+  const [transferAgentId, setTransferAgentId] = useState('');
+  const [transferRemarks, setTransferRemarks] = useState('');
+  const [savingTransfer, setSavingTransfer] = useState(false);
+  const [transferError, setTransferError] = useState(null);
+
+  // Assign to Sales Agent Modal State
+  const [assignOpen, setAssignOpen] = useState(false);
+  const [selectedAssignLead, setSelectedAssignLead] = useState(null);
+  const [assignAgentId, setAssignAgentId] = useState('');
+  const [assignType, setAssignType] = useState('Demo'); // 'Demo', 'Walk-in', 'Sales Follow-up'
+  const [assignDate, setAssignDate] = useState('');
+  const [assignTime, setAssignTime] = useState('11:00');
+  const [assignRemarks, setAssignRemarks] = useState('');
+  const [savingAssign, setSavingAssign] = useState(false);
+  const [assignError, setAssignError] = useState(null);
+
+  // Sales Follow-up Modal State
+  const [salesFollowUpOpen, setSalesFollowUpOpen] = useState(false);
+  const [selectedSalesFollowUpLead, setSelectedSalesFollowUpLead] = useState(null);
+  const [salesFollowUpDate, setSalesFollowUpDate] = useState('');
+  const [salesFollowUpTime, setSalesFollowUpTime] = useState('11:00');
+  const [salesFollowUpRemarks, setSalesFollowUpRemarks] = useState('');
+  const [salesFollowUpAgentId, setSalesFollowUpAgentId] = useState('');
+  const [savingSalesFollowUp, setSavingSalesFollowUp] = useState(false);
+  const [salesFollowUpError, setSalesFollowUpError] = useState(null);
+
+  // WhatsApp Sales Agent Modal State
+  const [whatsAppOpen, setWhatsAppOpen] = useState(false);
+  const [selectedWhatsAppLead, setSelectedWhatsAppLead] = useState(null);
+  const [whatsAppData, setWhatsAppData] = useState({
+    salesAgentId: '',
+    salesAgentName: '',
+    salesAgentPhone: '',
+    salesAgentRole: 'Sales Agent',
+    relatedActivityType: 'Demo',
+    scheduledDate: '',
+    scheduledTime: '',
+    remarks: '',
+    messageContent: '',
+  });
+  const [whatsAppError, setWhatsAppError] = useState(null);
+  const [whatsAppSuccess, setWhatsAppSuccess] = useState(null);
+  const [savingWhatsApp, setSavingWhatsApp] = useState(false);
+
   // Action Dropdown Menu State
   const [actionMenuAnchorEl, setActionMenuAnchorEl] = useState(null);
   const [actionMenuLead, setActionMenuLead] = useState(null);
@@ -235,6 +307,95 @@ export default function AgentDashboard() {
   useEffect(() => {
     fetchDashboardData();
   }, [fetchDashboardData]);
+
+  const fetchAssignedActivities = useCallback(async () => {
+    if (!isSalesAgent) return;
+    setAssignedLoading(true);
+    try {
+      const res = await getAssignedActivities();
+      if (res) {
+        setAssignedActivities(res.activities || []);
+        setAssignedSummary(res.summary || {});
+      }
+    } catch (err) {
+      console.error('Failed to load assigned activities', err);
+    } finally {
+      setAssignedLoading(false);
+    }
+  }, [isSalesAgent]);
+
+  useEffect(() => {
+    if (isSalesAgent) {
+      fetchAssignedActivities();
+    }
+  }, [fetchAssignedActivities, isSalesAgent]);
+
+  const handleUpdateAssignedStatus = async (activity, newStatus, remarks) => {
+    try {
+      if (activity.activityType === 'Demo') {
+        await updateDemoStatus(activity.leadId, activity.id, {
+          status: newStatus === 'Completed' ? 'Done' : newStatus,
+          remarks,
+        });
+        setSnackbarMessage(`Demo marked as ${newStatus} successfully!`);
+      } else if (activity.activityType === 'Walk-in') {
+        await updateWalkInStatus(activity.leadId, activity.id, {
+          status: newStatus,
+          remark: remarks,
+        });
+        setSnackbarMessage(`Walk-in marked as ${newStatus} successfully!`);
+      } else if (activity.activityType === 'Sales Follow-up') {
+        if (activity.id.startsWith('lead_fu_')) {
+          await completeFollowUp(activity.leadId, { remarks });
+        } else {
+          await updateSalesFollowUpStatus(activity.leadId, activity.id, {
+            status: newStatus,
+            remarks,
+          });
+        }
+        setSnackbarMessage(`Sales Follow-up marked as ${newStatus}!`);
+      }
+      await Promise.all([fetchAssignedActivities(), fetchDashboardData(), fetchMyLeads()]);
+    } catch (err) {
+      setSnackbarMessage(err.response?.data?.message || 'Failed to update activity status');
+      throw err;
+    }
+  };
+
+  const handleRescheduleAssigned = async (activity, date, time, remarks) => {
+    try {
+      if (activity.activityType === 'Demo') {
+        await updateDemoStatus(activity.leadId, activity.id, {
+          demoDate: date,
+          demoTime: time,
+          remarks,
+        });
+        setSnackbarMessage(`Demo rescheduled for ${date} at ${time}`);
+      } else if (activity.activityType === 'Walk-in') {
+        await updateWalkInStatus(activity.leadId, activity.id, {
+          walkInDate: date,
+          walkInTime: time,
+          remark: remarks,
+        });
+        setSnackbarMessage(`Walk-in rescheduled for ${date} at ${time}`);
+      } else if (activity.activityType === 'Sales Follow-up') {
+        if (activity.id.startsWith('lead_fu_')) {
+          await rescheduleFollowUp(activity.leadId, { followUpDate: date, followUpTime: time, remarks });
+        } else {
+          await updateSalesFollowUpStatus(activity.leadId, activity.id, {
+            followUpDate: date,
+            followUpTime: time,
+            remarks,
+          });
+        }
+        setSnackbarMessage(`Sales Follow-up rescheduled for ${date} at ${time}`);
+      }
+      await Promise.all([fetchAssignedActivities(), fetchDashboardData(), fetchMyLeads()]);
+    } catch (err) {
+      setSnackbarMessage(err.response?.data?.message || 'Failed to reschedule activity');
+      throw err;
+    }
+  };
 
   const fetchMyLeads = useCallback(async () => {
     setLoading(true);
@@ -582,10 +743,6 @@ export default function AgentDashboard() {
     }
   };
 
-  const agentName = user?.fullName || user?.username || 'Agent';
-  const agentRole = user?.agentRole || 'Calling Agent';
-  const isSalesAgent = agentRole?.toLowerCase() === 'sales agent';
-
   // Handle Dynamic Next Action Click
   const handleNextActionClick = (e, lead) => {
     e.stopPropagation();
@@ -646,6 +803,334 @@ export default function AgentDashboard() {
     }
   };
 
+  // Open Transfer Modal
+  const handleOpenTransfer = async (lead) => {
+    setSelectedTransferLead(lead);
+    setTransferAgentId('');
+    setTransferRemarks('');
+    setTransferError(null);
+    setTransferOpen(true);
+    try {
+      const agents = await getActiveAgents();
+      setActiveAgentsList(agents || []);
+    } catch (err) {
+      console.error('Failed to load active agents for transfer', err);
+    }
+  };
+
+  const handleExecuteTransfer = async () => {
+    if (!selectedTransferLead || !transferAgentId) return;
+    setSavingTransfer(true);
+    setTransferError(null);
+    try {
+      await transferLead(selectedTransferLead._id, {
+        toAgentId: transferAgentId,
+        remarks: transferRemarks,
+      });
+      setSnackbarMessage('Lead transferred successfully! New owner updated immediately.');
+      setTransferOpen(false);
+      await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
+    } catch (err) {
+      setTransferError(err.response?.data?.message || 'Unable to transfer lead');
+    } finally {
+      setSavingTransfer(false);
+    }
+  };
+
+  // Open Assign to Sales Agent Modal
+  const handleOpenAssign = async (lead) => {
+    setSelectedAssignLead(lead);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    setAssignDate(formatDateToYYYYMMDD(tomorrow));
+    setAssignTime('11:00');
+    setAssignRemarks('');
+    setAssignType('Demo');
+    setAssignError(null);
+    setAssignOpen(true);
+
+    try {
+      const agents = await getActiveAgents();
+      setActiveAgentsList(agents || []);
+      const sales = (agents || []).find(a => a.agentRole?.toLowerCase().includes('sales'));
+      if (sales) setAssignAgentId(sales._id);
+    } catch (err) {
+      console.error('Failed to load active agents for assignment', err);
+    }
+  };
+
+  const handleExecuteAssign = async () => {
+    if (!selectedAssignLead || !assignAgentId) return;
+    setSavingAssign(true);
+    setAssignError(null);
+    try {
+      if (assignType === 'Demo') {
+        await createDemo(selectedAssignLead._id, {
+          salesAgent: assignAgentId,
+          demoDate: assignDate,
+          demoTime: assignTime,
+          status: 'Planned',
+          remarks: assignRemarks || 'Demo assigned to sales agent',
+        });
+      } else if (assignType === 'Walk-in') {
+        await createWalkIn(selectedAssignLead._id, {
+          salesAgent: assignAgentId,
+          walkInDate: assignDate,
+          walkInTime: assignTime,
+          status: 'Planned',
+          remark: assignRemarks || 'Walk-in assigned to sales agent',
+        });
+      } else if (assignType === 'Sales Follow-up') {
+        await createSalesFollowUp(selectedAssignLead._id, {
+          salesAgent: assignAgentId,
+          followUpDate: assignDate,
+          followUpTime: assignTime,
+          remarks: assignRemarks || 'Sales follow-up assigned to sales agent',
+        });
+      }
+      setSnackbarMessage(`Activity assigned to Sales Agent successfully!`);
+      setAssignOpen(false);
+      await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
+    } catch (err) {
+      setAssignError(err.response?.data?.message || 'Unable to assign activity');
+    } finally {
+      setSavingAssign(false);
+    }
+  };
+
+  // Open Sales Follow-up Modal
+  const handleOpenSalesFollowUp = async (lead) => {
+    setSelectedSalesFollowUpLead(lead);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    setSalesFollowUpDate(formatDateToYYYYMMDD(tomorrow));
+    setSalesFollowUpTime('11:00');
+    setSalesFollowUpRemarks('');
+    setSalesFollowUpAgentId('');
+    setSalesFollowUpError(null);
+    setSalesFollowUpOpen(true);
+
+    try {
+      const agents = await getActiveAgents();
+      setActiveAgentsList(agents || []);
+    } catch (err) {
+      console.error('Failed to load active agents', err);
+    }
+  };
+
+  const handleExecuteSalesFollowUp = async () => {
+    if (!selectedSalesFollowUpLead) return;
+    setSavingSalesFollowUp(true);
+    setSalesFollowUpError(null);
+    try {
+      await createSalesFollowUp(selectedSalesFollowUpLead._id, {
+        followUpDate: salesFollowUpDate,
+        followUpTime: salesFollowUpTime,
+        salesAgent: salesFollowUpAgentId || undefined,
+        remarks: salesFollowUpRemarks || 'Scheduled sales follow-up',
+      });
+      setSnackbarMessage('Sales follow-up scheduled successfully!');
+      setSalesFollowUpOpen(false);
+      await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
+    } catch (err) {
+      setSalesFollowUpError(err.response?.data?.message || 'Unable to schedule follow-up');
+    } finally {
+      setSavingSalesFollowUp(false);
+    }
+  };
+
+  // Open WhatsApp Sales Agent Modal
+  const handleOpenWhatsApp = async (activityType = 'Demo', lead = null) => {
+    const targetLead = lead || actionMenuLead;
+    if (!targetLead) return;
+    setSelectedWhatsAppLead(targetLead);
+
+    let currentAgents = activeAgentsList;
+    if (!currentAgents || currentAgents.length === 0) {
+      try {
+        currentAgents = await getActiveAgents();
+        setActiveAgentsList(currentAgents || []);
+      } catch (err) {
+        console.error('Failed to load agents for WhatsApp', err);
+      }
+    }
+
+    const resolvedAgent = resolveSalesAgentForLead(targetLead, currentAgents || [], activityType);
+
+    let scheduledDate = '';
+    let scheduledTime = '11:00';
+    let remarks = targetLead.remarks || targetLead.latestRemark || '';
+
+    if (activityType === 'Demo') {
+      if (targetLead.latestDemo) {
+        scheduledDate = targetLead.latestDemo.demoDate ? targetLead.latestDemo.demoDate.substring(0, 10) : '';
+        scheduledTime = targetLead.latestDemo.demoTime || '15:00';
+        remarks = targetLead.latestDemo.remarks || remarks;
+      } else {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        scheduledDate = formatDateToYYYYMMDD(tomorrow);
+        scheduledTime = '15:00';
+      }
+    } else if (activityType === 'Walk-in') {
+      if (targetLead.latestWalkIn) {
+        scheduledDate = targetLead.latestWalkIn.walkInDate ? targetLead.latestWalkIn.walkInDate.substring(0, 10) : '';
+        scheduledTime = targetLead.latestWalkIn.walkInTime || '11:00';
+        remarks = targetLead.latestWalkIn.remark || remarks;
+      } else {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        scheduledDate = formatDateToYYYYMMDD(tomorrow);
+        scheduledTime = '11:00';
+      }
+    } else if (activityType === 'Sales Follow-up') {
+      if (targetLead.latestFollowUp) {
+        scheduledDate = targetLead.latestFollowUp.followUpDate ? targetLead.latestFollowUp.followUpDate.substring(0, 10) : '';
+        scheduledTime = targetLead.latestFollowUp.followUpTime || '11:00';
+        remarks = targetLead.latestFollowUp.remarks || remarks;
+      } else if (targetLead.nextFollowUpAt) {
+        const dt = new Date(targetLead.nextFollowUpAt);
+        scheduledDate = formatDateToYYYYMMDD(dt);
+        scheduledTime = formatTime(targetLead.nextFollowUpAt) || '11:00';
+      } else {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        scheduledDate = formatDateToYYYYMMDD(tomorrow);
+        scheduledTime = '11:00';
+      }
+    } else {
+      activityType = 'Lead Assignment';
+      if (targetLead.nextFollowUpAt) {
+        const dt = new Date(targetLead.nextFollowUpAt);
+        scheduledDate = formatDateToYYYYMMDD(dt);
+        scheduledTime = formatTime(targetLead.nextFollowUpAt) || '11:00';
+      }
+    }
+
+    const contactPerson = targetLead.primaryContact?.name || '—';
+    const contactPhone = targetLead.primaryContact?.phone || '—';
+
+    const templateMsg = generateSalesAgentTemplate({
+      salesAgentName: resolvedAgent.salesAgentName,
+      activityType,
+      organizationName: targetLead.organizationName,
+      leadNumber: targetLead.leadNumber,
+      scheduledDate,
+      scheduledTime,
+      contactPerson,
+      contactPhone,
+      remarks,
+    });
+
+    setWhatsAppData({
+      salesAgentId: resolvedAgent.salesAgentId,
+      salesAgentName: resolvedAgent.salesAgentName,
+      salesAgentPhone: resolvedAgent.salesAgentPhone,
+      salesAgentRole: resolvedAgent.salesAgentRole,
+      relatedActivityType: activityType,
+      scheduledDate,
+      scheduledTime,
+      remarks,
+      messageContent: templateMsg,
+    });
+    setWhatsAppError(null);
+    setWhatsAppSuccess(null);
+    setWhatsAppOpen(true);
+  };
+
+  const handleSalesAgentSelectChange = (agentId) => {
+    const agent = (activeAgentsList || []).find((a) => a._id?.toString() === agentId?.toString());
+    if (!agent) return;
+
+    const agentName = agent.fullName || agent.username || 'Sales Agent';
+    const agentPhone = agent.phone || '';
+
+    const newMsg = generateSalesAgentTemplate({
+      salesAgentName: agentName,
+      activityType: whatsAppData.relatedActivityType,
+      organizationName: selectedWhatsAppLead?.organizationName,
+      leadNumber: selectedWhatsAppLead?.leadNumber,
+      scheduledDate: whatsAppData.scheduledDate,
+      scheduledTime: whatsAppData.scheduledTime,
+      contactPerson: selectedWhatsAppLead?.primaryContact?.name || '—',
+      contactPhone: selectedWhatsAppLead?.primaryContact?.phone || '—',
+      remarks: whatsAppData.remarks,
+    });
+
+    setWhatsAppData((p) => ({
+      ...p,
+      salesAgentId: agent._id?.toString(),
+      salesAgentName: agentName,
+      salesAgentPhone: agentPhone,
+      salesAgentRole: agent.agentRole || agent.role || 'Sales Agent',
+      messageContent: newMsg,
+    }));
+  };
+
+  const handleCloseWhatsApp = () => {
+    if (savingWhatsApp) return;
+    setWhatsAppOpen(false);
+    setWhatsAppError(null);
+    setWhatsAppSuccess(null);
+    setSelectedWhatsAppLead(null);
+  };
+
+  const handleSendWhatsApp = async () => {
+    if (!selectedWhatsAppLead) return;
+
+    const urlRes = createWhatsAppUrl(whatsAppData.salesAgentPhone, whatsAppData.messageContent);
+    if (!urlRes.success) {
+      setWhatsAppError(urlRes.error || `Selected Sales Agent (${whatsAppData.salesAgentName || 'Sales Agent'}) does not have a valid phone number in their user profile.`);
+      return;
+    }
+
+    if (!whatsAppData.messageContent || !whatsAppData.messageContent.trim()) {
+      setWhatsAppError('Message content cannot be empty');
+      return;
+    }
+
+    setSavingWhatsApp(true);
+    setWhatsAppError(null);
+
+    try {
+      // 1. Open WhatsApp Web / App via wa.me link
+      window.open(urlRes.url, '_blank', 'noopener,noreferrer');
+
+      // 2. Record official CRM activity
+      await sendWhatsAppActivity(selectedWhatsAppLead._id, {
+        messageType: `${whatsAppData.relatedActivityType} Details`,
+        messageContent: whatsAppData.messageContent.trim(),
+        recipientPhone: whatsAppData.salesAgentPhone.trim(),
+        recipientName: whatsAppData.salesAgentName.trim(),
+        recipientRole: 'Sales Agent',
+        relatedActivityType: whatsAppData.relatedActivityType,
+        salesAgentId: whatsAppData.salesAgentId || undefined,
+        salesAgentName: whatsAppData.salesAgentName || undefined,
+        scheduledDate: whatsAppData.scheduledDate || undefined,
+        scheduledTime: whatsAppData.scheduledTime || undefined,
+        remarks: whatsAppData.remarks || undefined,
+        status: 'Opened in WhatsApp (wa.me)',
+      });
+
+      setWhatsAppSuccess(`Opening WhatsApp for ${whatsAppData.salesAgentName}...`);
+      setSnackbarMessage(`WhatsApp opened for ${whatsAppData.salesAgentName}!`);
+      setTimeout(() => {
+        setWhatsAppOpen(false);
+        setWhatsAppSuccess(null);
+        setSelectedWhatsAppLead(null);
+      }, 1200);
+      await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
+    } catch (err) {
+      setWhatsAppError(err.response?.data?.message || 'Failed to record WhatsApp activity');
+    } finally {
+      setSavingWhatsApp(false);
+    }
+  };
+
   // Handle Action selection from the row dropdown menu
   const handleSelectAction = (actionKey) => {
     const lead = actionMenuLead;
@@ -653,6 +1138,7 @@ export default function AgentDashboard() {
     if (!lead) return;
 
     switch (actionKey) {
+      case 'log_call':
       case 'call_now':
         handleOpenRecordCall(lead, false);
         break;
@@ -671,12 +1157,11 @@ export default function AgentDashboard() {
       case 'followup_now':
         handleOpenRecordCall(lead, false, '', '10:00', 'Connected');
         break;
+      case 'schedule_walkin':
       case 'record_walkin':
         handleOpenWalkIn(lead);
         break;
       case 'schedule_demo':
-        handleOpenDemo(lead, 'Planned');
-        break;
       case 'reschedule_demo':
         handleOpenDemo(lead, 'Planned');
         break;
@@ -685,6 +1170,31 @@ export default function AgentDashboard() {
         break;
       case 'mark_demo_not_done':
         handleOpenDemo(lead, 'Not Done');
+        break;
+      case 'sales_followup':
+        handleOpenSalesFollowUp(lead);
+        break;
+      case 'assign_sales_agent':
+        handleOpenAssign(lead);
+        break;
+      case 'transfer_lead':
+        handleOpenTransfer(lead);
+        break;
+      case 'whatsapp_sales_agent':
+      case 'send_whatsapp':
+        handleOpenWhatsApp('Lead Assignment', lead);
+        break;
+      case 'whatsapp_demo':
+      case 'demo_confirmation':
+        handleOpenWhatsApp('Demo', lead);
+        break;
+      case 'whatsapp_walkin':
+      case 'walkin_confirmation':
+        handleOpenWhatsApp('Walk-in', lead);
+        break;
+      case 'whatsapp_followup':
+      case 'followup_reminder':
+        handleOpenWhatsApp('Sales Follow-up', lead);
         break;
       case 'close_won':
         handleOpenOutcome(lead, 'WON');
@@ -702,28 +1212,43 @@ export default function AgentDashboard() {
 
   const renderActionMenuIcon = (key) => {
     switch (key) {
+      case 'log_call':
       case 'call_now':
         return <PhoneInTalk sx={{ fontSize: 16, color: '#0284c7' }} />;
       case 'schedule_followup':
-        return <EventIcon sx={{ fontSize: 16, color: '#0284c7' }} />;
       case 'reschedule_followup':
-        return <Schedule sx={{ fontSize: 16, color: '#d97706' }} />;
+        return <Schedule sx={{ fontSize: 16, color: '#0284c7' }} />;
       case 'followup_now':
         return <PhoneInTalk sx={{ fontSize: 16, color: '#ea580c' }} />;
+      case 'schedule_walkin':
       case 'record_walkin':
         return <DirectionsWalk sx={{ fontSize: 16, color: '#059669' }} />;
       case 'schedule_demo':
-        return <LaptopMac sx={{ fontSize: 16, color: '#6366f1' }} />;
       case 'reschedule_demo':
-        return <CalendarMonth sx={{ fontSize: 16, color: '#6366f1' }} />;
+        return <LaptopMac sx={{ fontSize: 16, color: '#4f46e5' }} />;
       case 'mark_demo_done':
         return <CheckCircle sx={{ fontSize: 16, color: '#059669' }} />;
       case 'mark_demo_not_done':
         return <Cancel sx={{ fontSize: 16, color: '#dc2626' }} />;
+      case 'sales_followup':
+        return <EventIcon sx={{ fontSize: 16, color: '#d97706' }} />;
+      case 'assign_sales_agent':
+        return <PersonAdd sx={{ fontSize: 16, color: '#ea580c' }} />;
+      case 'transfer_lead':
+        return <SwapHoriz sx={{ fontSize: 16, color: '#8b5cf6' }} />;
       case 'close_won':
         return <EmojiEvents sx={{ fontSize: 16, color: '#059669' }} />;
       case 'close_lost':
         return <Cancel sx={{ fontSize: 16, color: '#dc2626' }} />;
+      case 'whatsapp_sales_agent':
+      case 'whatsapp_demo':
+      case 'whatsapp_walkin':
+      case 'whatsapp_followup':
+      case 'send_whatsapp':
+      case 'demo_confirmation':
+      case 'walkin_confirmation':
+      case 'followup_reminder':
+        return <WhatsAppIcon sx={{ fontSize: 16, color: '#25D366' }} />;
       case 'view_lead':
       default:
         return <Visibility sx={{ fontSize: 16, color: '#64748b' }} />;
@@ -886,6 +1411,20 @@ export default function AgentDashboard() {
         </Stack>
       </Paper>
 
+      {/* Sales Agent Workspace: Dedicated Assigned Activities Section */}
+      {isSalesAgent && (
+        <AssignedActivitiesSection
+          activities={assignedActivities}
+          summary={assignedSummary}
+          loading={assignedLoading}
+          onRefresh={fetchAssignedActivities}
+          onUpdateStatus={handleUpdateAssignedStatus}
+          onReschedule={handleRescheduleAssigned}
+          onOpenOutcome={(item) => handleOpenOutcome({ _id: item.leadId, leadNumber: item.leadNumber, organizationName: item.organizationName }, 'WON')}
+          navigate={navigate}
+        />
+      )}
+
       {/* Today / Action Summary (7 Metrics - Requirement 2) */}
       <Box
         sx={{
@@ -1000,6 +1539,15 @@ export default function AgentDashboard() {
                 sx={{ borderRadius: 2, textTransform: 'none', color: '#475569', borderColor: '#cbd5e1' }}
               >
                 Refresh
+              </Button>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<SwapHoriz />}
+                onClick={() => navigate('/transfer-requests')}
+                sx={{ borderRadius: 2, textTransform: 'none', color: '#475569', borderColor: '#cbd5e1' }}
+              >
+                Transfer History
               </Button>
               <Button
                 size="small"
@@ -1631,7 +2179,7 @@ export default function AgentDashboard() {
         anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
       >
         {actionMenuLead && (() => {
-          const items = getLeadActionMenuItems(actionMenuLead);
+          const items = getLeadActionMenuItems(actionMenuLead, user);
           const menuElements = [];
           let lastCategory = null;
 
@@ -2671,6 +3219,730 @@ export default function AgentDashboard() {
             }}
           >
             {savingOutcome ? 'Finalizing...' : outcomeType === 'WON' ? 'Confirm Close as Won' : 'Confirm Close as Lost'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Transfer Lead Dialog (Immediate ownership transfer with audit trail) */}
+      <Dialog
+        open={transferOpen}
+        onClose={() => !savingTransfer && setTransferOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3, p: 1 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Avatar sx={{ bgcolor: '#8b5cf6', width: 36, height: 36, boxShadow: '0 2px 8px rgba(139, 92, 246, 0.25)' }}>
+              <SwapHoriz sx={{ fontSize: 20, color: '#ffffff' }} />
+            </Avatar>
+            <Box>
+              <Typography variant="h6" fontWeight={700} sx={{ color: '#0f172a', fontSize: 17 }}>
+                Transfer Lead Ownership
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#64748b' }}>
+                {selectedTransferLead?.organizationName} ({selectedTransferLead?.leadNumber})
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton size="small" onClick={() => setTransferOpen(false)} disabled={savingTransfer} sx={{ color: '#94a3b8' }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers sx={{ pt: 2, pb: 2.5 }}>
+          {transferError && (
+            <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }} onClose={() => setTransferError(null)}>
+              {transferError}
+            </Alert>
+          )}
+
+          <Stack spacing={2.5}>
+            {/* Current Owner Display */}
+            <Paper variant="outlined" sx={{ p: 2, borderRadius: 2, bgcolor: '#f8fafc', borderColor: '#e2e8f0' }}>
+              <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, display: 'block', mb: 1, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                Current Owner
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Avatar sx={{ bgcolor: 'primary.main', width: 34, height: 34, fontSize: 13, fontWeight: 600 }}>
+                  {(selectedTransferLead?.currentOwner?.fullName || selectedTransferLead?.currentOwnerName || 'U')[0]?.toUpperCase()}
+                </Avatar>
+                <Box sx={{ flexGrow: 1 }}>
+                  <Typography variant="body2" fontWeight={600} color="#0f172a">
+                    {selectedTransferLead?.currentOwner?.fullName || selectedTransferLead?.currentOwnerName || 'Unassigned'}
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    {selectedTransferLead?.currentOwner?.email || (selectedTransferLead?.currentOwner?.username ? `@${selectedTransferLead.currentOwner.username}` : 'No email')}
+                  </Typography>
+                </Box>
+                <Chip
+                  label={selectedTransferLead?.currentOwner?.agentRole || selectedTransferLead?.currentOwner?.role || 'Agent'}
+                  size="small"
+                  variant="outlined"
+                  sx={{ borderRadius: 1.5, fontSize: 11, fontWeight: 600 }}
+                />
+              </Box>
+            </Paper>
+
+            {/* Destination Active Agent */}
+            <FormControl fullWidth size="small" required>
+              <InputLabel id="transfer-agent-select-label">Select New Active Agent</InputLabel>
+              <Select
+                labelId="transfer-agent-select-label"
+                label="Select New Active Agent *"
+                value={transferAgentId}
+                onChange={(e) => setTransferAgentId(e.target.value)}
+                sx={{ borderRadius: 2 }}
+              >
+                {activeAgentsList
+                  .filter((a) => a._id !== (selectedTransferLead?.currentOwner?._id || selectedTransferLead?.currentOwner))
+                  .map((agent) => (
+                    <MenuItem key={agent._id} value={agent._id}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
+                        <Avatar sx={{ width: 24, height: 24, fontSize: 11, bgcolor: agent.agentRole?.toLowerCase().includes('sales') ? '#ea580c' : '#0284c7' }}>
+                          {agent.fullName?.[0]?.toUpperCase() || 'A'}
+                        </Avatar>
+                        <Typography variant="body2" fontWeight={500}>
+                          {agent.fullName || agent.username}
+                        </Typography>
+                        <Chip
+                          label={agent.agentRole || agent.role || 'Agent'}
+                          size="small"
+                          sx={{ ml: 'auto', height: 20, fontSize: 10, borderRadius: 1 }}
+                        />
+                      </Box>
+                    </MenuItem>
+                  ))}
+              </Select>
+            </FormControl>
+
+            {/* Remarks / Reason */}
+            <TextField
+              fullWidth
+              multiline
+              rows={3}
+              label="Transfer Reason / Remarks"
+              placeholder="e.g. Reassigning lead for sales visit and closing..."
+              value={transferRemarks}
+              onChange={(e) => setTransferRemarks(e.target.value)}
+              helperText="Recorded in the lead activity audit trail and transfer log."
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+            />
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #e2e8f0' }}>
+          <Button
+            variant="outlined"
+            onClick={() => setTransferOpen(false)}
+            disabled={savingTransfer}
+            sx={{ borderRadius: 2, textTransform: 'none', color: '#475569', borderColor: '#cbd5e1' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleExecuteTransfer}
+            disabled={savingTransfer || !transferAgentId}
+            startIcon={savingTransfer ? <CircularProgress size={16} color="inherit" /> : <SwapHoriz />}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600,
+              px: 3,
+              bgcolor: '#8b5cf6',
+              boxShadow: '0 2px 8px rgba(139, 92, 246, 0.3)',
+              '&:hover': { bgcolor: '#7c3aed' },
+            }}
+          >
+            {savingTransfer ? 'Transferring...' : 'Confirm Transfer Lead'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Assign to Sales Agent Dialog */}
+      <Dialog
+        open={assignOpen}
+        onClose={() => !savingAssign && setAssignOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3, p: 1 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Avatar sx={{ bgcolor: '#ea580c', width: 36, height: 36, boxShadow: '0 2px 8px rgba(234, 88, 12, 0.25)' }}>
+              <PersonAdd sx={{ fontSize: 20, color: '#ffffff' }} />
+            </Avatar>
+            <Box>
+              <Typography variant="h6" fontWeight={700} sx={{ color: '#0f172a', fontSize: 17 }}>
+                Assign to Sales Agent
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#64748b' }}>
+                {selectedAssignLead?.organizationName} ({selectedAssignLead?.leadNumber})
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton size="small" onClick={() => setAssignOpen(false)} disabled={savingAssign} sx={{ color: '#94a3b8' }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers sx={{ pt: 2, pb: 2.5 }}>
+          {assignError && (
+            <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }} onClose={() => setAssignError(null)}>
+              {assignError}
+            </Alert>
+          )}
+
+          <Stack spacing={2.5}>
+            <FormControl fullWidth size="small" required>
+              <InputLabel id="assign-sales-agent-label">Select Sales Agent</InputLabel>
+              <Select
+                labelId="assign-sales-agent-label"
+                label="Select Sales Agent *"
+                value={assignAgentId}
+                onChange={(e) => setAssignAgentId(e.target.value)}
+                sx={{ borderRadius: 2 }}
+              >
+                {activeAgentsList
+                  .filter((a) => !a.agentRole || a.agentRole.toLowerCase().includes('sales') || activeAgentsList.length <= 2)
+                  .map((agent) => (
+                    <MenuItem key={agent._id} value={agent._id}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
+                        <Avatar sx={{ width: 24, height: 24, fontSize: 11, bgcolor: '#ea580c' }}>
+                          {agent.fullName?.[0]?.toUpperCase() || 'S'}
+                        </Avatar>
+                        <Typography variant="body2" fontWeight={500}>
+                          {agent.fullName || agent.username}
+                        </Typography>
+                        <Chip
+                          label={agent.agentRole || 'Sales Agent'}
+                          size="small"
+                          sx={{ ml: 'auto', height: 20, fontSize: 10, borderRadius: 1 }}
+                        />
+                      </Box>
+                    </MenuItem>
+                  ))}
+              </Select>
+            </FormControl>
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="assign-activity-type-label">Activity Type</InputLabel>
+              <Select
+                labelId="assign-activity-type-label"
+                label="Activity Type"
+                value={assignType}
+                onChange={(e) => setAssignType(e.target.value)}
+                sx={{ borderRadius: 2 }}
+              >
+                <MenuItem value="Demo">💻 Product Demo</MenuItem>
+                <MenuItem value="Walk-in">🚶 Customer Walk-in</MenuItem>
+                <MenuItem value="Sales Follow-up">📞 Sales Follow-up</MenuItem>
+              </Select>
+            </FormControl>
+
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="Scheduled Date"
+                  value={assignDate}
+                  onChange={(e) => setAssignDate(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="time"
+                  label="Scheduled Time"
+                  value={assignTime}
+                  onChange={(e) => setAssignTime(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                />
+              </Grid>
+            </Grid>
+
+            <TextField
+              fullWidth
+              multiline
+              rows={3}
+              label="Instructions / Remarks for Sales Agent"
+              placeholder="e.g. Schedule product demonstration focusing on clinic management features..."
+              value={assignRemarks}
+              onChange={(e) => setAssignRemarks(e.target.value)}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+            />
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #e2e8f0' }}>
+          <Button
+            variant="outlined"
+            onClick={() => setAssignOpen(false)}
+            disabled={savingAssign}
+            sx={{ borderRadius: 2, textTransform: 'none', color: '#475569', borderColor: '#cbd5e1' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleExecuteAssign}
+            disabled={savingAssign || !assignAgentId}
+            startIcon={savingAssign ? <CircularProgress size={16} color="inherit" /> : <PersonAdd />}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600,
+              px: 3,
+              bgcolor: '#ea580c',
+              boxShadow: '0 2px 8px rgba(234, 88, 12, 0.3)',
+              '&:hover': { bgcolor: '#c2410c' },
+            }}
+          >
+            {savingAssign ? 'Assigning...' : 'Assign to Sales Agent'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Sales Follow-up Dialog */}
+      <Dialog
+        open={salesFollowUpOpen}
+        onClose={() => !savingSalesFollowUp && setSalesFollowUpOpen(false)}
+        maxWidth="sm"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3, p: 1 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', pb: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Avatar sx={{ bgcolor: '#d97706', width: 36, height: 36, boxShadow: '0 2px 8px rgba(217, 119, 6, 0.25)' }}>
+              <Schedule sx={{ fontSize: 20, color: '#ffffff' }} />
+            </Avatar>
+            <Box>
+              <Typography variant="h6" fontWeight={700} sx={{ color: '#0f172a', fontSize: 17 }}>
+                Schedule Sales Follow-up
+              </Typography>
+              <Typography variant="caption" sx={{ color: '#64748b' }}>
+                {selectedSalesFollowUpLead?.organizationName} ({selectedSalesFollowUpLead?.leadNumber})
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton size="small" onClick={() => setSalesFollowUpOpen(false)} disabled={savingSalesFollowUp} sx={{ color: '#94a3b8' }}>
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent dividers sx={{ pt: 2, pb: 2.5 }}>
+          {salesFollowUpError && (
+            <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }} onClose={() => setSalesFollowUpError(null)}>
+              {salesFollowUpError}
+            </Alert>
+          )}
+
+          <Stack spacing={2.5}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="Follow-up Date"
+                  value={salesFollowUpDate}
+                  onChange={(e) => setSalesFollowUpDate(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                />
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="time"
+                  label="Follow-up Time"
+                  value={salesFollowUpTime}
+                  onChange={(e) => setSalesFollowUpTime(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                />
+              </Grid>
+            </Grid>
+
+            <FormControl fullWidth size="small">
+              <InputLabel id="sales-fu-agent-label">Sales Agent (Optional)</InputLabel>
+              <Select
+                labelId="sales-fu-agent-label"
+                label="Sales Agent (Optional)"
+                value={salesFollowUpAgentId}
+                onChange={(e) => setSalesFollowUpAgentId(e.target.value)}
+                sx={{ borderRadius: 2 }}
+              >
+                <MenuItem value="">Unassigned (Self / Current Owner)</MenuItem>
+                {activeAgentsList
+                  .filter((a) => !a.agentRole || a.agentRole.toLowerCase().includes('sales') || activeAgentsList.length <= 2)
+                  .map((agent) => (
+                    <MenuItem key={agent._id} value={agent._id}>
+                      {agent.fullName || agent.username} ({agent.agentRole || 'Sales Agent'})
+                    </MenuItem>
+                  ))}
+              </Select>
+            </FormControl>
+
+            <TextField
+              fullWidth
+              multiline
+              rows={3}
+              label="Follow-up Notes / Agenda"
+              placeholder="e.g. Commercial proposal review, quotation follow-up..."
+              value={salesFollowUpRemarks}
+              onChange={(e) => setSalesFollowUpRemarks(e.target.value)}
+              sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+            />
+          </Stack>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid #e2e8f0' }}>
+          <Button
+            variant="outlined"
+            onClick={() => setSalesFollowUpOpen(false)}
+            disabled={savingSalesFollowUp}
+            sx={{ borderRadius: 2, textTransform: 'none', color: '#475569', borderColor: '#cbd5e1' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleExecuteSalesFollowUp}
+            disabled={savingSalesFollowUp}
+            startIcon={savingSalesFollowUp ? <CircularProgress size={16} color="inherit" /> : <Schedule />}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600,
+              px: 3,
+              bgcolor: '#d97706',
+              boxShadow: '0 2px 8px rgba(217, 119, 6, 0.3)',
+              '&:hover': { bgcolor: '#b45309' },
+            }}
+          >
+            {savingSalesFollowUp ? 'Scheduling...' : 'Schedule Follow-up'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Sales Agent WhatsApp Communication Dialog */}
+      <Dialog
+        open={whatsAppOpen}
+        onClose={handleCloseWhatsApp}
+        maxWidth="md"
+        fullWidth
+        PaperProps={{
+          sx: {
+            borderRadius: 3,
+            bgcolor: 'background.paper',
+            border: '1px solid',
+            borderColor: 'divider',
+          },
+        }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', gap: 1.5, borderBottom: '1px solid', borderColor: 'divider', py: 2 }}>
+          <Box
+            sx={{
+              width: 36,
+              height: 36,
+              borderRadius: '50%',
+              bgcolor: 'rgba(37, 211, 102, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: '#25D366',
+            }}
+          >
+            <WhatsAppIcon sx={{ fontSize: 22 }} />
+          </Box>
+          <Box>
+            <Typography variant="h6" fontWeight={700} sx={{ color: 'text.primary', lineHeight: 1.2 }}>
+              WhatsApp Sales Agent
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              Notify assigned Sales Agent via WhatsApp (wa.me) with pre-filled activity details
+            </Typography>
+          </Box>
+          <Chip
+            label="wa.me Web / App"
+            size="small"
+            sx={{
+              ml: 'auto',
+              mr: 1,
+              bgcolor: 'rgba(37, 211, 102, 0.1)',
+              color: '#15803d',
+              border: '1px solid rgba(37, 211, 102, 0.3)',
+              fontWeight: 700,
+              fontSize: 11,
+            }}
+          />
+          <IconButton sx={{ color: 'text.secondary' }} onClick={handleCloseWhatsApp}>
+            <CloseIcon />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ pt: 2.5 }}>
+          {whatsAppError && (
+            <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }}>
+              {whatsAppError}
+            </Alert>
+          )}
+
+          {whatsAppSuccess && (
+            <Alert severity="success" sx={{ mb: 2, borderRadius: 2 }}>
+              {whatsAppSuccess}
+            </Alert>
+          )}
+
+          <Grid container spacing={2.5} sx={{ mt: 0.2 }}>
+            {/* Sales Agent Selector */}
+            <Grid item xs={12} sm={7}>
+              <FormControl fullWidth size="small" required>
+                <InputLabel>Assigned Sales Agent *</InputLabel>
+                <Select
+                  value={whatsAppData.salesAgentId || ''}
+                  label="Assigned Sales Agent *"
+                  onChange={(e) => handleSalesAgentSelectChange(e.target.value)}
+                  sx={{ borderRadius: 2 }}
+                >
+                  {activeAgentsList.map((agent) => (
+                    <MenuItem key={agent._id} value={agent._id}>
+                      {agent.fullName || agent.username} ({agent.agentRole || agent.role || 'Sales'}) {agent.phone ? `• ${agent.phone}` : '• (No Phone)'}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Grid>
+
+            {/* Related Activity Type Selector */}
+            <Grid item xs={12} sm={5}>
+              <FormControl fullWidth size="small" required>
+                <InputLabel>Activity Type *</InputLabel>
+                <Select
+                  value={whatsAppData.relatedActivityType || 'Demo'}
+                  label="Activity Type *"
+                  onChange={(e) => {
+                    const newType = e.target.value;
+                    const newMsg = generateSalesAgentTemplate({
+                      salesAgentName: whatsAppData.salesAgentName,
+                      activityType: newType,
+                      organizationName: selectedWhatsAppLead?.organizationName,
+                      leadNumber: selectedWhatsAppLead?.leadNumber,
+                      scheduledDate: whatsAppData.scheduledDate,
+                      scheduledTime: whatsAppData.scheduledTime,
+                      contactPerson: selectedWhatsAppLead?.primaryContact?.name || '—',
+                      contactPhone: selectedWhatsAppLead?.primaryContact?.phone || '—',
+                      remarks: whatsAppData.remarks,
+                    });
+
+                    setWhatsAppData((p) => ({
+                      ...p,
+                      relatedActivityType: newType,
+                      messageContent: newMsg,
+                    }));
+                  }}
+                  sx={{ borderRadius: 2 }}
+                >
+                  <MenuItem value="Demo">Product Demo</MenuItem>
+                  <MenuItem value="Walk-in">Walk-in Visit</MenuItem>
+                  <MenuItem value="Sales Follow-up">Sales Follow-up</MenuItem>
+                  <MenuItem value="Lead Assignment">Lead Assignment</MenuItem>
+                </Select>
+              </FormControl>
+            </Grid>
+
+            {/* Sales Agent Dynamic Phone Display */}
+            <Grid item xs={12}>
+              {whatsAppData.salesAgentPhone ? (
+                <Paper
+                  elevation={0}
+                  sx={{
+                    p: 1.5,
+                    bgcolor: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.5,
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  <Avatar sx={{ width: 30, height: 30, bgcolor: '#25D366', color: '#fff' }}>
+                    <WhatsAppIcon sx={{ fontSize: 18 }} />
+                  </Avatar>
+                  <Box>
+                    <Typography variant="caption" sx={{ color: '#15803d', fontWeight: 600, textTransform: 'uppercase', fontSize: 10 }}>
+                      Sales Agent WhatsApp / Phone
+                    </Typography>
+                    <Typography variant="body2" fontWeight={700} sx={{ color: '#14532d' }}>
+                      {normalizeWhatsAppPhone(whatsAppData.salesAgentPhone).displayPhone}
+                      {' '}
+                      <span style={{ fontWeight: 500, fontSize: 12, color: '#16a34a' }}>
+                        ({whatsAppData.salesAgentName || 'Assigned Sales Agent'})
+                      </span>
+                    </Typography>
+                  </Box>
+                  <Chip
+                    label="Ready to send via wa.me"
+                    size="small"
+                    sx={{
+                      ml: 'auto',
+                      bgcolor: 'rgba(37, 211, 102, 0.2)',
+                      color: '#15803d',
+                      fontWeight: 700,
+                      fontSize: 11,
+                      border: '1px solid rgba(37, 211, 102, 0.4)',
+                    }}
+                  />
+                </Paper>
+              ) : (
+                <Alert severity="warning" sx={{ borderRadius: 2, py: 0.5 }}>
+                  <strong>No phone number found</strong> for {whatsAppData.salesAgentName || 'the selected agent'}. Please add a phone number in their user settings before sending WhatsApp.
+                </Alert>
+              )}
+            </Grid>
+
+            {/* Activity Metadata Preview Box */}
+            <Grid item xs={12}>
+              <Paper
+                elevation={0}
+                sx={{
+                  p: 1.75,
+                  borderRadius: 2,
+                  bgcolor: '#f8fafc',
+                  border: '1px solid #e2e8f0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 2,
+                }}
+              >
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 10 }}>
+                    Lead / Organization
+                  </Typography>
+                  <Typography variant="body2" fontWeight={700} sx={{ color: 'text.primary' }}>
+                    {selectedWhatsAppLead?.organizationName} (#{selectedWhatsAppLead?.leadNumber})
+                  </Typography>
+                </Box>
+
+                {whatsAppData.scheduledDate && (
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 10 }}>
+                      Scheduled Date & Time
+                    </Typography>
+                    <Typography variant="body2" fontWeight={600} sx={{ color: '#4f46e5' }}>
+                      {formatDate(whatsAppData.scheduledDate)} {whatsAppData.scheduledTime ? `at ${whatsAppData.scheduledTime}` : ''}
+                    </Typography>
+                  </Box>
+                )}
+
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 10 }}>
+                    Client Contact
+                  </Typography>
+                  <Typography variant="body2" fontWeight={600} sx={{ color: '#0284c7' }}>
+                    {selectedWhatsAppLead?.primaryContact?.name || '—'} {selectedWhatsAppLead?.primaryContact?.phone ? `(${selectedWhatsAppLead?.primaryContact?.phone})` : ''}
+                  </Typography>
+                </Box>
+
+                <Box sx={{ ml: 'auto' }}>
+                  <Button
+                    size="small"
+                    variant="text"
+                    onClick={() => {
+                      const resetMsg = generateSalesAgentTemplate({
+                        salesAgentName: whatsAppData.salesAgentName,
+                        activityType: whatsAppData.relatedActivityType,
+                        organizationName: selectedWhatsAppLead?.organizationName,
+                        leadNumber: selectedWhatsAppLead?.leadNumber,
+                        scheduledDate: whatsAppData.scheduledDate,
+                        scheduledTime: whatsAppData.scheduledTime,
+                        contactPerson: selectedWhatsAppLead?.primaryContact?.name || '—',
+                        contactPhone: selectedWhatsAppLead?.primaryContact?.phone || '—',
+                        remarks: whatsAppData.remarks,
+                      });
+                      setWhatsAppData((p) => ({ ...p, messageContent: resetMsg }));
+                    }}
+                    sx={{ textTransform: 'none', fontSize: 11, fontWeight: 600, color: 'primary.main' }}
+                  >
+                    Reset to Default Template
+                  </Button>
+                </Box>
+              </Paper>
+            </Grid>
+
+            {/* Message Content & Preview */}
+            <Grid item xs={12}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 0.75 }}>
+                <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#1e293b' }}>
+                  WhatsApp Message Preview & Content *
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {whatsAppData.messageContent?.length || 0} characters
+                </Typography>
+              </Box>
+
+              <TextField
+                fullWidth
+                required
+                multiline
+                rows={5}
+                value={whatsAppData.messageContent}
+                onChange={(e) => setWhatsAppData((p) => ({ ...p, messageContent: e.target.value }))}
+                placeholder="Type your WhatsApp message..."
+                sx={{
+                  '& .MuiOutlinedInput-root': {
+                    borderRadius: 2,
+                    bgcolor: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    fontFamily: 'inherit',
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                  },
+                }}
+              />
+              <Typography variant="caption" sx={{ display: 'block', mt: 0.75, color: '#64748b' }}>
+                💡 Clicking <strong>WhatsApp Sales Agent</strong> will open WhatsApp Web / App with this pre-filled message for <strong>{whatsAppData.salesAgentName || 'the sales agent'}</strong>. You can review and hit Send directly in WhatsApp.
+              </Typography>
+            </Grid>
+          </Grid>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 3, py: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+          <Button
+            onClick={handleCloseWhatsApp}
+            disabled={savingWhatsApp}
+            sx={{ borderRadius: 2, textTransform: 'none', color: 'text.secondary' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleSendWhatsApp}
+            disabled={savingWhatsApp || !whatsAppData.salesAgentPhone || !whatsAppData.messageContent}
+            startIcon={savingWhatsApp ? <CircularProgress size={16} color="inherit" /> : <WhatsAppIcon />}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 700,
+              bgcolor: '#25D366',
+              color: '#ffffff',
+              px: 3,
+              boxShadow: '0 2px 8px rgba(37, 211, 102, 0.35)',
+              '&:hover': { bgcolor: '#1ea952' },
+            }}
+          >
+            {savingWhatsApp ? 'Opening WhatsApp...' : 'WhatsApp Sales Agent'}
           </Button>
         </DialogActions>
       </Dialog>

@@ -3,6 +3,7 @@ const Lead = require('../models/Lead');
 const ContactPerson = require('../models/ContactPerson');
 const CallLog = require('../models/CallLog');
 const LeadActivity = require('../models/LeadActivity');
+const { canAccessLead } = require('../utils/leadPermissions');
 
 exports.createCallLog = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -20,10 +21,11 @@ exports.createCallLog = async (req, res, next) => {
 
     // Authorization: Agents can only operate on their own leads
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+    const isOwnerOrCreator = lead.currentOwner?.toString() === req.userId || lead.createdBy?.toString() === req.userId;
+    if (!isAdmin && !isOwnerOrCreator) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden: You can only record calls for leads assigned to you' });
+      return res.status(403).json({ message: 'Forbidden: You can only record calls for leads assigned to you or created by you' });
     }
 
     let contactId = null;
@@ -118,8 +120,8 @@ exports.listCallLogs = async (req, res, next) => {
     const leadId = req.params.id;
     const lead = await Lead.findById(leadId);
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner.toString() !== req.userId) return res.status(403).json({ message: 'Forbidden: You do not have access to this lead' });
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!hasAccess) return res.status(403).json({ message: 'Forbidden: You do not have access to this lead' });
 
     const logs = await CallLog.find({ lead: leadId }).sort({ createdAt: -1 }).populate('calledContact').populate('user', 'fullName');
     res.json({ logs });

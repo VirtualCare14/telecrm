@@ -4,13 +4,18 @@ const ContactPerson = require('../models/ContactPerson');
 const LeadActivity = require('../models/LeadActivity');
 const User = require('../models/User');
 const CallLog = require('../models/CallLog');
+const FollowUp = require('../models/FollowUp');
+const LeadTransferRequest = require('../models/LeadTransferRequest');
+const Demo = require('../models/Demo');
+const WalkIn = require('../models/WalkIn');
 const { getNextSequence, formatLeadNumber } = require('../services/counterService');
+const { canAccessLead } = require('../utils/leadPermissions');
 
 exports.createLead = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { organizationName, industry, organizationType, address, leadSource, contacts, currentOwner } = req.body;
+    const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, contacts, currentOwner } = req.body;
     if (!organizationName || !leadSource || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
       await session.abortTransaction();
       session.endSession();
@@ -25,9 +30,33 @@ exports.createLead = async (req, res, next) => {
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
     const ownerId = isAdmin && currentOwner ? currentOwner : req.userId;
 
+    const initialOwnerUser = await User.findById(ownerId).session(session);
+    const creatorUser = await User.findById(req.userId).session(session);
+    const initialOwnerName = initialOwnerUser ? (initialOwnerUser.fullName || initialOwnerUser.username) : 'Agent';
+    const creatorName = creatorUser ? (creatorUser.fullName || creatorUser.username) : 'Creator';
+
+    const initialRemark = (remarks !== undefined ? remarks : (sourceRemarks || '')).trim();
+
     const lead = await Lead.create([{
       leadNumber, organizationName, industry, organizationType, address,
-      leadSource, currentOwner: ownerId, createdBy: req.userId
+      leadSource,
+      remarks: initialRemark,
+      sourceRemarks: initialRemark,
+      latestRemark: initialRemark || undefined,
+      currentOwner: ownerId,
+      createdBy: req.userId,
+      ownershipHistory: [{
+        previousOwner: null,
+        previousOwnerName: 'None (Initial Creation)',
+        newOwner: ownerId,
+        newOwnerName: initialOwnerName,
+        transferredBy: req.userId,
+        transferredByName: creatorName,
+        transferredAt: new Date(),
+        remarks: 'Initial lead assignment on creation',
+        reason: 'Lead Created',
+        isInitial: true,
+      }],
     }], { session });
 
     const leadId = lead[0]._id;
@@ -102,17 +131,23 @@ exports.listLeads = async (req, res, next) => {
     const search = (req.query.search || '').trim();
 
     const filter = {};
-    const ownerParam = req.query.owner || req.query.agentId || req.query.agent;
+    const ownerParam = req.query.owner || req.query.currentOwner;
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
     if (!isAdmin) {
-      filter.currentOwner = req.userId;
+      const isCallingAgent = (req.agentRole && req.agentRole.toLowerCase().includes('calling')) || (req.user?.agentRole && req.user.agentRole.toLowerCase().includes('calling'));
+      if (isCallingAgent) {
+        filter.$or = [{ currentOwner: req.userId }, { createdBy: req.userId }];
+      } else {
+        filter.currentOwner = req.userId;
+      }
     } else if (req.query.unassigned === 'true' || ownerParam === 'unassigned') {
       const activeAgents = await User.find({ role: 'AGENT', active: true }).select('_id');
       const activeAgentIds = activeAgents.map((a) => a._id);
       filter.currentOwner = { $nin: activeAgentIds };
     } else if (ownerParam) {
+      let targetAgentId = null;
       if (mongoose.Types.ObjectId.isValid(ownerParam)) {
-        filter.currentOwner = new mongoose.Types.ObjectId(ownerParam);
+        targetAgentId = new mongoose.Types.ObjectId(ownerParam);
       } else {
         const matchedAgent = await User.findOne({
           role: 'AGENT',
@@ -122,11 +157,18 @@ exports.listLeads = async (req, res, next) => {
             { email: new RegExp(`^${ownerParam.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
           ],
         }).select('_id');
-        if (matchedAgent) {
-          filter.currentOwner = matchedAgent._id;
+        if (matchedAgent) targetAgentId = matchedAgent._id;
+      }
+      if (targetAgentId) {
+        const targetAgent = await User.findById(targetAgentId).select('agentRole').lean();
+        const isCalling = targetAgent?.agentRole?.toLowerCase().includes('calling');
+        if (isCalling) {
+          filter.$or = [{ currentOwner: targetAgentId }, { createdBy: targetAgentId }];
         } else {
-          filter.currentOwner = ownerParam;
+          filter.currentOwner = targetAgentId;
         }
+      } else {
+        filter.currentOwner = ownerParam;
       }
     }
 
@@ -208,17 +250,64 @@ exports.listLeads = async (req, res, next) => {
 
 exports.getLead = async (req, res, next) => {
   try {
-    const lead = await Lead.findById(req.params.id)
+    const leadDoc = await Lead.findById(req.params.id)
       .populate('primaryContact')
-      .populate('currentOwner', 'fullName email username')
-      .populate('createdBy', 'fullName email username')
-      .populate('closedBy', 'fullName email username')
-      .lean();
-    if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && (!lead.currentOwner || (lead.currentOwner._id?.toString() !== req.userId && lead.currentOwner.toString() !== req.userId))) {
+      .populate('currentOwner', 'fullName email username phone role agentRole')
+      .populate('createdBy', 'fullName email username phone role agentRole')
+      .populate('closedBy', 'fullName email username phone role agentRole')
+      .populate('ownershipHistory.previousOwner', 'fullName email username phone role agentRole')
+      .populate('ownershipHistory.newOwner', 'fullName email username phone role agentRole')
+      .populate('ownershipHistory.transferredBy', 'fullName email username phone role agentRole');
+
+    if (!leadDoc) return res.status(404).json({ message: 'Lead not found' });
+    const hasAccess = await canAccessLead(leadDoc, req.userId, req.userRole, req.agentRole);
+    if (!hasAccess) {
       return res.status(403).json({ message: 'Forbidden: You do not have access to this lead' });
     }
+
+    const lead = leadDoc.toObject();
+
+    // If ownershipHistory is empty (e.g. legacy lead), synthesize chain from creator, transfer requests, and current owner
+    if (!lead.ownershipHistory || lead.ownershipHistory.length === 0) {
+      const chain = [];
+      const creatorName = lead.createdBy?.fullName || lead.createdBy?.username || 'Creator';
+      chain.push({
+        previousOwner: null,
+        previousOwnerName: 'None (Initial Creation)',
+        newOwner: lead.createdBy || lead.currentOwner,
+        newOwnerName: creatorName,
+        transferredBy: lead.createdBy,
+        transferredByName: creatorName,
+        transferredAt: lead.createdAt || new Date(),
+        remarks: 'Initial lead assignment on creation',
+        reason: 'Lead Created',
+        isInitial: true,
+      });
+
+      const transferRequests = await LeadTransferRequest.find({ lead: lead._id, status: 'Approved' })
+        .sort({ createdAt: 1 })
+        .populate('fromAgent', 'fullName email username phone role agentRole')
+        .populate('toAgent', 'fullName email username phone role agentRole')
+        .lean();
+
+      transferRequests.forEach((tr) => {
+        chain.push({
+          previousOwner: tr.fromAgent,
+          previousOwnerName: tr.fromAgent?.fullName || tr.fromAgent?.username || 'Previous Agent',
+          newOwner: tr.toAgent,
+          newOwnerName: tr.toAgent?.fullName || tr.toAgent?.username || 'New Agent',
+          transferredBy: tr.fromAgent,
+          transferredByName: tr.fromAgent?.fullName || tr.fromAgent?.username || 'Agent',
+          transferredAt: tr.respondedAt || tr.updatedAt || tr.createdAt,
+          remarks: 'Lead transferred',
+          reason: 'Ownership transferred',
+          isInitial: false,
+        });
+      });
+
+      lead.ownershipHistory = chain;
+    }
+
     // Simplify owner/creator to just names for frontend
     if (lead.currentOwner && typeof lead.currentOwner === 'object') {
       lead.currentOwnerName = lead.currentOwner.fullName || lead.currentOwner.username || 'Unassigned';
@@ -241,7 +330,7 @@ exports.updateLead = async (req, res, next) => {
   session.startTransaction();
   try {
     const leadId = req.params.id;
-    const { organizationName, industry, organizationType, address, leadSource, existingSoftwareUsed, softwareName } = req.body;
+    const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, existingSoftwareUsed, softwareName } = req.body;
 
     const lead = await Lead.findById(leadId).session(session);
     if (!lead) {
@@ -262,6 +351,15 @@ exports.updateLead = async (req, res, next) => {
     if (organizationType !== undefined) updates.organizationType = organizationType;
     if (address !== undefined) updates.address = address;
     if (leadSource !== undefined) updates.leadSource = leadSource;
+    if (remarks !== undefined) {
+      updates.remarks = remarks;
+      updates.sourceRemarks = remarks;
+      if (!lead.latestRemark) updates.latestRemark = remarks;
+    } else if (sourceRemarks !== undefined) {
+      updates.remarks = sourceRemarks;
+      updates.sourceRemarks = sourceRemarks;
+      if (!lead.latestRemark) updates.latestRemark = sourceRemarks;
+    }
     if (existingSoftwareUsed !== undefined) updates.existingSoftwareUsed = existingSoftwareUsed;
     if (softwareName !== undefined) updates.softwareName = softwareName;
 
@@ -317,10 +415,11 @@ exports.closeWon = async (req, res, next) => {
     }
 
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+    const isOwnerOrCreatorWon = lead.currentOwner?.toString() === req.userId || lead.createdBy?.toString() === req.userId;
+    if (!isAdmin && !isOwnerOrCreatorWon) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you' });
+      return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you or created by you' });
     }
 
     lead.closureStatus = 'WON';
@@ -379,10 +478,11 @@ exports.closeLost = async (req, res, next) => {
     }
 
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+    const isOwnerOrCreatorLost = lead.currentOwner?.toString() === req.userId || lead.createdBy?.toString() === req.userId;
+    if (!isAdmin && !isOwnerOrCreatorLost) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you' });
+      return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you or created by you' });
     }
 
     lead.closureStatus = 'LOST';
@@ -436,7 +536,7 @@ exports.addContact = async (req, res, next) => {
       await session.abortTransaction(); session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    if (req.userRole === 'AGENT' && lead.currentOwner?.toString() !== req.userId && lead.createdBy?.toString() !== req.userId) {
       await session.abortTransaction(); session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -489,7 +589,7 @@ exports.updateContact = async (req, res, next) => {
       await session.abortTransaction(); session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    if (req.userRole === 'AGENT' && lead.currentOwner?.toString() !== req.userId && lead.createdBy?.toString() !== req.userId) {
       await session.abortTransaction(); session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -535,7 +635,7 @@ exports.setPrimaryContact = async (req, res, next) => {
       await session.abortTransaction(); session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    if (req.userRole === 'AGENT' && lead.currentOwner?.toString() !== req.userId && lead.createdBy?.toString() !== req.userId) {
       await session.abortTransaction(); session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -576,7 +676,8 @@ exports.listContacts = async (req, res, next) => {
     const leadId = req.params.id;
     const lead = await Lead.findById(leadId);
     if (!lead) return res.status(404).json({ message: 'Lead not found' });
-    if (req.userRole === 'AGENT' && lead.currentOwner.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!hasAccess) {
       return res.status(403).json({ message: 'Forbidden' });
     }
 
@@ -837,3 +938,415 @@ exports.reopenLead = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.createSalesFollowUp = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const leadId = req.params.id;
+    const { followUpDate, followUpTime = '10:00', remarks = '', salesAgent: targetSalesAgent, salesAgentId } = req.body;
+
+    const lead = await Lead.findById(leadId).session(session);
+    if (!lead) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    const isOwner = lead.currentOwner?.toString() === req.userId;
+    const isAgent = req.userRole === 'AGENT' || req.user?.role?.toUpperCase() === 'AGENT';
+    if (!isAdmin && !isOwner && !isAgent) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Forbidden: You do not have permission to assign follow-ups for this lead' });
+    }
+
+    const assignedSalesAgentId = targetSalesAgent || salesAgentId || req.userId;
+    let salesAgentName = req.user?.fullName || req.user?.username || 'Sales Agent';
+    if (assignedSalesAgentId.toString() !== req.userId.toString()) {
+      const agentUser = await User.findById(assignedSalesAgentId).session(session);
+      if (agentUser) {
+        salesAgentName = agentUser.fullName || agentUser.username || 'Sales Agent';
+      }
+    }
+
+    const assignedByName = req.user?.fullName || req.user?.username || 'Calling Agent';
+    const followUpDateVal = new Date(followUpDate);
+    const finalRemarks = (remarks || '').trim();
+
+    const createdFollowUps = await FollowUp.create([{
+      lead: leadId,
+      salesAgent: assignedSalesAgentId,
+      assignedBy: req.userId,
+      updatedBy: req.userId,
+      followUpDate: followUpDateVal,
+      followUpTime: (followUpTime || '10:00').trim(),
+      status: 'Planned',
+      remarks: finalRemarks,
+    }], { session });
+
+    const followUpDoc = createdFollowUps[0];
+
+    // Compute target datetime for nextFollowUpAt
+    let targetDateTime = new Date(followUpDateVal);
+    if (followUpTime && typeof followUpTime === 'string') {
+      const [h, m] = followUpTime.split(':').map(Number);
+      targetDateTime.setHours(h || 10, m || 0, 0, 0);
+    }
+    lead.nextFollowUpAt = targetDateTime;
+
+    // Update latestSalesFollowUp on lead
+    lead.latestSalesFollowUp = {
+      followUpId: followUpDoc._id,
+      followUpDate: followUpDateVal,
+      followUpTime: (followUpTime || '10:00').trim(),
+      status: 'Planned',
+      remarks: finalRemarks,
+      salesAgent: assignedSalesAgentId,
+      salesAgentName,
+      assignedBy: req.userId,
+      assignedByName,
+      scheduledAt: new Date(),
+      updatedAt: new Date(),
+    };
+    await lead.save({ session });
+
+    // Activity log entry
+    await LeadActivity.create([{
+      lead: leadId,
+      action: 'Sales Follow-up Scheduled',
+      performedBy: req.userId,
+      role: req.userRole,
+      metadata: {
+        followUpId: followUpDoc._id.toString(),
+        followUpDate: followUpDateVal,
+        followUpTime: (followUpTime || '10:00').trim(),
+        remarks: finalRemarks,
+        salesAgentId: assignedSalesAgentId.toString(),
+        salesAgentName,
+        assignedByName,
+        activityType: 'Sales Follow-up',
+      },
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populated = await FollowUp.findById(followUpDoc._id)
+      .populate('salesAgent', 'fullName email username agentRole phone')
+      .populate('assignedBy', 'fullName email username agentRole')
+      .populate('updatedBy', 'fullName email username agentRole');
+
+    res.status(201).json({ followUp: populated, latestSalesFollowUp: lead.latestSalesFollowUp });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+};
+
+exports.updateSalesFollowUpStatus = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { id: leadId, followUpId } = req.params;
+    const { status, remarks, followUpDate, followUpTime } = req.body;
+
+    const lead = await Lead.findById(leadId).session(session);
+    if (!lead) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    const followUp = await FollowUp.findOne({ _id: followUpId, lead: leadId }).session(session);
+    if (!followUp) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Sales follow-up record not found' });
+    }
+
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    const isOwner = lead.currentOwner?.toString() === req.userId;
+    const isAssignedSalesAgent = followUp.salesAgent?.toString() === req.userId;
+    if (!isAdmin && !isOwner && !isAssignedSalesAgent) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Forbidden: You can only update follow-ups assigned to you or your leads' });
+    }
+
+    const targetStatus = (status || 'Completed').trim();
+    const finalRemarks = (remarks !== undefined ? remarks : followUp.remarks).trim();
+
+    if (['Done', 'Completed', 'Not Done'].includes(targetStatus) && !finalRemarks) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'Remarks are required when completing or marking not done' });
+    }
+
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
+    followUp.status = targetStatus;
+    followUp.remarks = finalRemarks;
+    if (followUpDate) followUp.followUpDate = new Date(followUpDate);
+    if (followUpTime) followUp.followUpTime = followUpTime.trim();
+    followUp.updatedBy = req.userId;
+    await followUp.save({ session });
+
+    if (['Done', 'Completed'].includes(targetStatus)) {
+      lead.nextFollowUpAt = null;
+    }
+
+    // Update latestSalesFollowUp on lead
+    lead.latestSalesFollowUp = {
+      followUpId: followUp._id,
+      followUpDate: followUp.followUpDate,
+      followUpTime: followUp.followUpTime,
+      status: followUp.status,
+      remarks: followUp.remarks,
+      salesAgent: followUp.salesAgent,
+      salesAgentName: lead.latestSalesFollowUp?.salesAgentName || updaterName,
+      assignedBy: followUp.assignedBy || lead.latestSalesFollowUp?.assignedBy,
+      assignedByName: lead.latestSalesFollowUp?.assignedByName || updaterName,
+      scheduledAt: lead.latestSalesFollowUp?.scheduledAt || followUp.createdAt,
+      updatedAt: new Date(),
+    };
+    await lead.save({ session });
+
+    // Activity log entry
+    await LeadActivity.create([{
+      lead: leadId,
+      action: 'Follow-up Completed',
+      performedBy: req.userId,
+      role: req.userRole,
+      metadata: {
+        followUpId: followUp._id.toString(),
+        status: followUp.status,
+        remarks: followUp.remarks,
+        updatedByName: updaterName,
+        activityType: 'Sales Follow-up',
+      },
+    }], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populated = await FollowUp.findById(followUp._id)
+      .populate('salesAgent', 'fullName email username agentRole phone')
+      .populate('assignedBy', 'fullName email username agentRole')
+      .populate('updatedBy', 'fullName email username agentRole');
+
+    res.json({ followUp: populated, latestSalesFollowUp: lead.latestSalesFollowUp });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+};
+
+exports.listSalesFollowUps = async (req, res, next) => {
+  try {
+    const leadId = req.params.id;
+    const lead = await Lead.findById(leadId);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+
+    const followUps = await FollowUp.find({ lead: leadId })
+      .sort({ followUpDate: -1, createdAt: -1 })
+      .populate('salesAgent', 'fullName email username agentRole phone')
+      .populate('assignedBy', 'fullName email username agentRole')
+      .populate('updatedBy', 'fullName email username agentRole');
+
+    res.json({ followUps });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.transferLead = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const leadId = req.params.id;
+    const { toAgentId, remarks, reason } = req.body;
+    if (!toAgentId) {
+      await session.abortTransaction(); session.endSession();
+      return res.status(400).json({ message: 'New active agent (toAgentId) is required' });
+    }
+
+    const lead = await Lead.findById(leadId).session(session);
+    if (!lead) {
+      await session.abortTransaction(); session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    if (lead.closureStatus && lead.closureStatus !== 'OPEN') {
+      await session.abortTransaction(); session.endSession();
+      return res.status(400).json({ message: 'Cannot transfer a closed lead' });
+    }
+
+    const toAgent = await User.findById(toAgentId).session(session);
+    if (!toAgent || !toAgent.active) {
+      await session.abortTransaction(); session.endSession();
+      return res.status(400).json({ message: 'Destination agent not found or is inactive' });
+    }
+
+    const oldOwnerId = lead.currentOwner;
+    const oldOwner = oldOwnerId ? await User.findById(oldOwnerId).session(session) : null;
+    const fromName = oldOwner ? (oldOwner.fullName || oldOwner.username) : 'Unassigned';
+    const toName = toAgent.fullName || toAgent.username;
+    const transferRemarks = (remarks || reason || '').trim() || 'Ownership transferred to new active agent';
+    const transferDetails = `Transferred from ${fromName} to ${toName}${remarks || reason ? ` — Reason/Remarks: ${transferRemarks}` : ''}`;
+
+    // Update current owner immediately
+    lead.currentOwner = toAgent._id;
+
+    // Ensure ownershipHistory exists and contains initial owner if empty
+    if (!Array.isArray(lead.ownershipHistory) || lead.ownershipHistory.length === 0) {
+      const creator = lead.createdBy ? await User.findById(lead.createdBy).session(session) : null;
+      lead.ownershipHistory = [{
+        previousOwner: null,
+        previousOwnerName: 'None (Initial Creation)',
+        newOwner: oldOwnerId || lead.createdBy,
+        newOwnerName: fromName,
+        transferredBy: lead.createdBy || req.userId,
+        transferredByName: creator ? (creator.fullName || creator.username) : 'Creator',
+        transferredAt: lead.createdAt || new Date(),
+        remarks: 'Initial lead assignment',
+        reason: 'Lead Created',
+        isInitial: true,
+      }];
+    }
+
+    // Append this transfer step to the chronological chain
+    lead.ownershipHistory.push({
+      previousOwner: oldOwnerId,
+      previousOwnerName: fromName,
+      newOwner: toAgent._id,
+      newOwnerName: toName,
+      transferredBy: req.userId,
+      transferredByName: req.user ? (req.user.fullName || req.user.username) : 'System',
+      transferredAt: new Date(),
+      remarks: transferRemarks,
+      reason: transferRemarks,
+      isInitial: false,
+    });
+
+    await lead.save({ session });
+
+    // Cancel or approve any existing pending transfer requests for this lead
+    await LeadTransferRequest.updateMany(
+      { lead: leadId, status: 'Pending' },
+      { status: 'Approved', respondedAt: new Date() },
+      { session }
+    );
+
+    // Create completed transfer request record for audit trail
+    const transferReq = await LeadTransferRequest.create([{
+      lead: lead._id,
+      fromAgent: oldOwnerId || req.userId,
+      toAgent: toAgent._id,
+      status: 'Approved',
+      requestedAt: new Date(),
+      respondedAt: new Date(),
+    }], { session });
+
+    // Save transfer in the existing activity/history system (LeadActivity)
+    await LeadActivity.create([
+      {
+        lead: lead._id,
+        action: 'Lead Transferred',
+        performedBy: req.userId,
+        role: req.userRole,
+        details: transferDetails,
+        metadata: {
+          requestId: transferReq[0]._id,
+          from: oldOwnerId,
+          to: toAgent._id,
+          newOwner: toAgent._id,
+          remarks: transferRemarks,
+          reason: transferRemarks,
+        },
+      },
+      {
+        lead: lead._id,
+        action: 'Ownership Changed',
+        performedBy: req.userId,
+        role: req.userRole,
+        details: transferDetails,
+        metadata: {
+          newOwner: toAgent._id,
+          previousOwner: oldOwnerId,
+          remarks: transferRemarks,
+          reason: transferRemarks,
+        },
+      },
+    ], { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    const populatedLead = await Lead.findById(lead._id)
+      .populate('currentOwner', 'fullName username email phone role agentRole')
+      .populate('createdBy', 'fullName username role agentRole')
+      .populate('primaryContact')
+      .populate('ownershipHistory.previousOwner', 'fullName username email phone role agentRole')
+      .populate('ownershipHistory.newOwner', 'fullName username email phone role agentRole')
+      .populate('ownershipHistory.transferredBy', 'fullName email username phone role agentRole');
+
+    res.json({
+      message: 'Lead transferred successfully',
+      lead: populatedLead,
+      transfer: transferReq[0],
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+};
+
+exports.deleteLead = async (req, res, next) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role === 'ADMIN' || (req.user?.agentRole && req.user.agentRole.toLowerCase() === 'admin');
+    if (!isAdmin) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Forbidden: Only administrators can delete leads' });
+    }
+
+    const { id } = req.params;
+    const lead = await Lead.findById(id).session(session);
+    if (!lead) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(404).json({ message: 'Lead not found' });
+    }
+
+    // Cascade delete all child records related to this specific lead
+    await ContactPerson.deleteMany({ lead: id }, { session });
+    await LeadActivity.deleteMany({ lead: id }, { session });
+    await CallLog.deleteMany({ lead: id }, { session });
+    await Demo.deleteMany({ lead: id }, { session });
+    await WalkIn.deleteMany({ lead: id }, { session });
+    await FollowUp.deleteMany({ lead: id }, { session });
+    await LeadTransferRequest.deleteMany({ lead: id }, { session });
+    await Lead.deleteOne({ _id: id }, { session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.json({
+      message: 'Lead and associated records deleted successfully',
+      leadId: id,
+      organizationName: lead.organizationName,
+      leadNumber: lead.leadNumber
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    next(err);
+  }
+};
+

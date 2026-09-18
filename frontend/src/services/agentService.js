@@ -34,3 +34,8 @@ export async function forceLogoutAgent(id) {
   const res = await api.post(`/agents/${id}/force-logout`);
   return res.data;
 }
+
+export async function deleteAgent(id) {
+  const res = await api.delete(`/agents/${id}`);
+  return res.data;
+}

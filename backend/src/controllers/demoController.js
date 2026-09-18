@@ -3,6 +3,8 @@ const Lead = require('../models/Lead');
 const Demo = require('../models/Demo');
 const LeadActivity = require('../models/LeadActivity');
 
+const User = require('../models/User');
+
 function getScheduledDateTime(dateInput, timeInput) {
   const d = new Date(dateInput);
   let year = d.getFullYear();
@@ -29,7 +31,7 @@ exports.createDemo = async (req, res, next) => {
   session.startTransaction();
   try {
     const leadId = req.params.id;
-    const { demoDate, demoTime, remarks = '' } = req.body;
+    const { demoDate, demoTime, remarks = '', salesAgent: targetSalesAgent, salesAgentId } = req.body;
 
     const lead = await Lead.findById(leadId).session(session);
     if (!lead) {
@@ -38,23 +40,34 @@ exports.createDemo = async (req, res, next) => {
       return res.status(404).json({ message: 'Lead not found' });
     }
 
-    // Authorization: Sales Agents can only operate on their own assigned leads
+    // Authorization: Admin, Lead Owner, or Calling/Sales Agent
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+    const isOwner = lead.currentOwner?.toString() === req.userId;
+    const isAgent = req.userRole === 'AGENT' || req.user?.role?.toUpperCase() === 'AGENT';
+    if (!isAdmin && !isOwner && !isAgent) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden: You can only schedule demos for leads assigned to you' });
+      return res.status(403).json({ message: 'Forbidden: You do not have permission to schedule demos for this lead' });
     }
 
+    const assignedSalesAgentId = targetSalesAgent || salesAgentId || req.userId;
+    let salesAgentName = req.user?.fullName || req.user?.username || 'Sales Agent';
+    if (assignedSalesAgentId.toString() !== req.userId.toString()) {
+      const agentUser = await User.findById(assignedSalesAgentId).session(session);
+      if (agentUser) {
+        salesAgentName = agentUser.fullName || agentUser.username || 'Sales Agent';
+      }
+    }
+
+    const assignedByName = req.user?.fullName || req.user?.username || 'Calling Agent';
     const demoDateVal = new Date(demoDate);
-    // Requirement 2: A scheduled Demo should initially have status "Planned"
     const demoStatus = 'Planned';
     const demoRemarks = (remarks || '').trim();
-    const agentName = req.user?.fullName || req.user?.username || 'Sales Agent';
 
     const createdDemos = await Demo.create([{
       lead: leadId,
-      salesAgent: req.userId,
+      salesAgent: assignedSalesAgentId,
+      assignedBy: req.userId,
       updatedBy: req.userId,
       demoDate: demoDateVal,
       demoTime: demoTime.trim(),
@@ -64,17 +77,19 @@ exports.createDemo = async (req, res, next) => {
 
     const demoDoc = createdDemos[0];
 
-    // Update latestDemo on Lead document (preserves calls, walk-ins, remarks, dispositions, follow-ups)
+    // Update latestDemo on Lead document
     lead.latestDemo = {
       demoId: demoDoc._id,
       demoDate: demoDateVal,
       demoTime: demoTime.trim(),
       status: demoStatus,
       remarks: demoRemarks,
-      salesAgent: req.userId,
-      salesAgentName: agentName,
+      salesAgent: assignedSalesAgentId,
+      salesAgentName,
+      assignedBy: req.userId,
+      assignedByName,
       updatedBy: req.userId,
-      updatedByName: agentName,
+      updatedByName: assignedByName,
       scheduledAt: new Date(),
       updatedAt: new Date(),
     };
@@ -92,7 +107,9 @@ exports.createDemo = async (req, res, next) => {
         demoTime: demoTime.trim(),
         status: demoStatus,
         remarks: demoRemarks,
-        salesAgentName: agentName,
+        salesAgentId: assignedSalesAgentId.toString(),
+        salesAgentName,
+        assignedByName,
       },
     }], { session });
 
@@ -100,7 +117,8 @@ exports.createDemo = async (req, res, next) => {
     session.endSession();
 
     const populated = await Demo.findById(demoDoc._id)
-      .populate('salesAgent', 'fullName email username agentRole')
+      .populate('salesAgent', 'fullName email username agentRole phone')
+      .populate('assignedBy', 'fullName email username agentRole')
       .populate('updatedBy', 'fullName email username agentRole');
 
     res.status(201).json({ demo: populated, latestDemo: lead.latestDemo });
@@ -125,13 +143,6 @@ exports.updateDemoStatus = async (req, res, next) => {
       return res.status(404).json({ message: 'Lead not found' });
     }
 
-    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
-      await session.abortTransaction();
-      session.endSession();
-      return res.status(403).json({ message: 'Forbidden: You can only update demos for leads assigned to you' });
-    }
-
     const demo = await Demo.findOne({ _id: demoId, lead: leadId }).session(session);
     if (!demo) {
       await session.abortTransaction();
@@ -139,9 +150,18 @@ exports.updateDemoStatus = async (req, res, next) => {
       return res.status(404).json({ message: 'Demo record not found' });
     }
 
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    const isOwner = lead.currentOwner?.toString() === req.userId;
+    const isAssignedSalesAgent = demo.salesAgent?.toString() === req.userId;
+    if (!isAdmin && !isOwner && !isAssignedSalesAgent) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(403).json({ message: 'Forbidden: You can only update demos assigned to you or your leads' });
+    }
+
     const targetStatus = status.trim();
 
-    // Requirement 4: Require Demo Remarks/Notes when marking a Demo as Done or Not Done
+    // Require Demo Remarks/Notes when marking a Demo as Done or Not Done
     if (['Done', 'Not Done'].includes(targetStatus)) {
       if (!remarks || !remarks.trim()) {
         await session.abortTransaction();
@@ -150,11 +170,10 @@ exports.updateDemoStatus = async (req, res, next) => {
       }
     }
 
-    // Determine target demo date and time for validation
+    // Do not allow a future scheduled Demo to be marked Done before its scheduled time
     const targetDate = demoDate ? demoDate : demo.demoDate;
     const targetTime = demoTime ? demoTime.trim() : demo.demoTime;
 
-    // Requirement 7: Do not allow a future scheduled Demo to be marked Done before its scheduled time
     if (targetStatus === 'Done') {
       const scheduledDateTime = getScheduledDateTime(targetDate, targetTime);
       const now = new Date();
@@ -167,7 +186,7 @@ exports.updateDemoStatus = async (req, res, next) => {
       }
     }
 
-    const updaterName = req.user?.fullName || req.user?.username || 'Sales Agent';
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
     demo.status = targetStatus;
     if (remarks !== undefined) demo.remarks = remarks.trim();
     if (demoDate) demo.demoDate = new Date(demoDate);
@@ -184,6 +203,8 @@ exports.updateDemoStatus = async (req, res, next) => {
       remarks: demo.remarks,
       salesAgent: demo.salesAgent,
       salesAgentName: lead.latestDemo?.salesAgentName || updaterName,
+      assignedBy: demo.assignedBy || lead.latestDemo?.assignedBy,
+      assignedByName: lead.latestDemo?.assignedByName || updaterName,
       updatedBy: req.userId,
       updatedByName: updaterName,
       scheduledAt: lead.latestDemo?.scheduledAt || demo.createdAt,
@@ -209,7 +230,8 @@ exports.updateDemoStatus = async (req, res, next) => {
     session.endSession();
 
     const populated = await Demo.findById(demo._id)
-      .populate('salesAgent', 'fullName email username agentRole')
+      .populate('salesAgent', 'fullName email username agentRole phone')
+      .populate('assignedBy', 'fullName email username agentRole')
       .populate('updatedBy', 'fullName email username agentRole');
 
     res.json({ demo: populated, latestDemo: lead.latestDemo });
@@ -228,7 +250,8 @@ exports.listDemos = async (req, res, next) => {
 
     const demos = await Demo.find({ lead: leadId })
       .sort({ demoDate: -1, createdAt: -1 })
-      .populate('salesAgent', 'fullName email username agentRole')
+      .populate('salesAgent', 'fullName email username agentRole phone')
+      .populate('assignedBy', 'fullName email username agentRole')
       .populate('updatedBy', 'fullName email username agentRole');
 
     res.json({ demos });

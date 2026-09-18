@@ -58,7 +58,13 @@ exports.adminDashboard = async (req, res, next) => {
         if (found) targetAgentId = found._id;
       }
       if (targetAgentId) {
-        match.currentOwner = targetAgentId;
+        const targetAgent = await User.findById(targetAgentId).select('agentRole').lean();
+        const isCalling = targetAgent?.agentRole?.toLowerCase().includes('calling');
+        if (isCalling) {
+          match.$or = [{ currentOwner: targetAgentId }, { createdBy: targetAgentId }];
+        } else {
+          match.currentOwner = targetAgentId;
+        }
       }
     }
     if (start || end) {
@@ -110,13 +116,161 @@ exports.adminDashboard = async (req, res, next) => {
       ? Lead.countDocuments(assignedToActiveMatch)
       : Promise.resolve(0);
 
-    const [totalLeads, upcomingFollowups, overdueFollowups, totalAgents, totalWon, totalLost, assignedToActiveLeads] = await Promise.all([
-      totalLeadsPromise, upcomingPromise, overduePromise, totalAgentsPromise, wonPromise, lostPromise, assignedToActivePromise
-    ]);
+    const totalWon = await wonPromise;
+    const totalLost = await lostPromise;
+    const totalLeads = await totalLeadsPromise;
+    const upcomingFollowups = await upcomingPromise;
+    const overdueFollowups = await overduePromise;
+    const totalAgents = await totalAgentsPromise;
+    const assignedToActiveLeads = await assignedToActivePromise;
 
     const unassignedLeads = Math.max(0, totalLeads - assignedToActiveLeads);
 
-    res.json({ totalLeads, unassignedLeads, upcomingFollowups, overdueFollowups, totalAgents, totalWon, totalLost });
+    // --- DAILY ACTIVITY / STATUS METRICS FOR SELECTED AGENT + DATE ---
+    const dailyNewLeads = totalLeads;
+
+    // Calls
+    const callMatch = {};
+    if (targetAgentId) callMatch.user = targetAgentId;
+    if (start || end) {
+      callMatch.calledAt = {};
+      if (start) callMatch.calledAt.$gte = start;
+      if (end) callMatch.calledAt.$lte = end;
+    }
+    const dailyCallsPromise = CallLog.countDocuments(callMatch);
+
+    // Activity Match for Demo, WalkIn, FollowUp
+    const activityAgentMatch = {};
+    if (targetAgentId) {
+      activityAgentMatch.$or = [{ salesAgent: targetAgentId }, { assignedBy: targetAgentId }];
+    }
+
+    // Demos Scheduled & Completed (using actual demoDate)
+    const demoDateMatch = {};
+    if (start || end) {
+      demoDateMatch.demoDate = {};
+      if (start) demoDateMatch.demoDate.$gte = start;
+      if (end) demoDateMatch.demoDate.$lte = end;
+    }
+    const demoFilter = { ...activityAgentMatch, ...demoDateMatch };
+    const dailyDemosScheduledPromise = Demo.countDocuments(demoFilter);
+    const dailyDemosCompletedPromise = Demo.countDocuments({
+      ...demoFilter,
+      status: { $in: ['Done', 'Completed'] }
+    });
+
+    // Walk-ins Scheduled & Completed (using actual walkInDate)
+    const walkInDateMatch = {};
+    if (start || end) {
+      walkInDateMatch.walkInDate = {};
+      if (start) walkInDateMatch.walkInDate.$gte = start;
+      if (end) walkInDateMatch.walkInDate.$lte = end;
+    }
+    const walkInFilter = { ...activityAgentMatch, ...walkInDateMatch };
+    const dailyWalkinsScheduledPromise = WalkIn.countDocuments(walkInFilter);
+    const dailyWalkinsCompletedPromise = WalkIn.countDocuments({
+      ...walkInFilter,
+      status: { $in: ['Done', 'Completed'] }
+    });
+
+    // Follow-ups Scheduled for selected date (using actual followUpDate and Lead.nextFollowUpAt)
+    const FollowUp = require('../models/FollowUp');
+    const dailyFollowupsPromise = (async () => {
+      try {
+        const fuDateMatch = {};
+        if (start || end) {
+          fuDateMatch.followUpDate = {};
+          if (start) fuDateMatch.followUpDate.$gte = start;
+          if (end) fuDateMatch.followUpDate.$lte = end;
+        }
+        const fuDocs = await FollowUp.find({ ...activityAgentMatch, ...fuDateMatch }).select('lead').lean();
+        const fuDocLeadIds = fuDocs.map(f => f.lead ? f.lead.toString() : null).filter(Boolean);
+
+        const leadFuMatch = {};
+        if (targetAgentId) {
+          const targetAgent = await User.findById(targetAgentId).select('agentRole').lean();
+          const isCallingAgent = targetAgent?.agentRole?.toLowerCase().includes('calling');
+          if (isCallingAgent) {
+            leadFuMatch.$or = [{ currentOwner: targetAgentId }, { createdBy: targetAgentId }];
+          } else {
+            leadFuMatch.currentOwner = targetAgentId;
+          }
+        }
+        leadFuMatch.closureStatus = 'OPEN';
+        if (start || end) {
+          leadFuMatch.nextFollowUpAt = {};
+          if (start) leadFuMatch.nextFollowUpAt.$gte = start;
+          if (end) leadFuMatch.nextFollowUpAt.$lte = end;
+        } else {
+          leadFuMatch.nextFollowUpAt = { $exists: true, $ne: null };
+        }
+        const leadsWithFu = await Lead.find(leadFuMatch).select('_id').lean();
+        const leadFuIds = leadsWithFu.map(l => l._id.toString());
+
+        return new Set([...fuDocLeadIds, ...leadFuIds]).size;
+      } catch (e) {
+        return 0;
+      }
+    })();
+
+    // Overdue Follow-ups (using existing overdue logic: closureStatus: 'OPEN', nextFollowUpAt < now)
+    const overdueLeadMatch = {};
+    if (targetAgentId) {
+      const targetAgent = await User.findById(targetAgentId).select('agentRole').lean();
+      const isCallingAgent = targetAgent?.agentRole?.toLowerCase().includes('calling');
+      if (isCallingAgent) {
+        overdueLeadMatch.$or = [{ currentOwner: targetAgentId }, { createdBy: targetAgentId }];
+      } else {
+        overdueLeadMatch.currentOwner = targetAgentId;
+      }
+    }
+    overdueLeadMatch.closureStatus = 'OPEN';
+    overdueLeadMatch.nextFollowUpAt = { $lt: now, $gt: new Date(0) };
+    if (start || end) {
+      if (start) overdueLeadMatch.nextFollowUpAt.$gte = start;
+      if (end) overdueLeadMatch.nextFollowUpAt.$lte = end;
+    }
+    const dailyOverdueFollowupsPromise = Lead.countDocuments(overdueLeadMatch);
+
+    const [
+      dailyCalls,
+      dailyDemosScheduled,
+      dailyDemosCompleted,
+      dailyWalkinsScheduled,
+      dailyWalkinsCompleted,
+      dailyFollowups,
+      dailyOverdueFollowups,
+    ] = await Promise.all([
+      dailyCallsPromise,
+      dailyDemosScheduledPromise,
+      dailyDemosCompletedPromise,
+      dailyWalkinsScheduledPromise,
+      dailyWalkinsCompletedPromise,
+      dailyFollowupsPromise,
+      dailyOverdueFollowupsPromise,
+    ]);
+
+    res.json({
+      totalLeads,
+      unassignedLeads,
+      upcomingFollowups,
+      overdueFollowups,
+      totalAgents,
+      totalWon,
+      totalLost,
+      dailyActivity: {
+        newLeads: dailyNewLeads || 0,
+        calls: dailyCalls || 0,
+        followups: dailyFollowups || 0,
+        demosScheduled: dailyDemosScheduled || 0,
+        demosCompleted: dailyDemosCompleted || 0,
+        walkinsScheduled: dailyWalkinsScheduled || 0,
+        walkinsCompleted: dailyWalkinsCompleted || 0,
+        overdueFollowups: dailyOverdueFollowups || 0,
+        won: totalWon || 0,
+        lost: totalLost || 0,
+      }
+    });
   } catch (err) {
     next(err);
   }
@@ -132,33 +286,37 @@ exports.agentDashboard = async (req, res, next) => {
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
 
-    const matchOwner = { currentOwner: ownerObjId };
+    const isCallingAgent = (req.agentRole && req.agentRole.toLowerCase().includes('calling')) ||
+      (req.user?.agentRole && req.user.agentRole.toLowerCase().includes('calling'));
+    const matchOwner = isCallingAgent
+      ? { $or: [{ currentOwner: ownerObjId }, { createdBy: ownerObjId }] }
+      : { currentOwner: ownerObjId };
 
     // 1. My Total Leads
     const totalLeadsPromise = Lead.countDocuments(matchOwner);
 
     // 2. Today's Follow-ups (scheduled for today and still OPEN)
     const todayFollowupsPromise = Lead.countDocuments({
-      currentOwner: ownerObjId,
+      ...matchOwner,
       closureStatus: 'OPEN',
       nextFollowUpAt: { $gte: startOfToday, $lte: endOfToday }
     });
 
     // 3. Overdue Follow-ups (scheduled in the past before now and still OPEN)
     const overdueFollowupsPromise = Lead.countDocuments({
-      currentOwner: ownerObjId,
+      ...matchOwner,
       closureStatus: 'OPEN',
       nextFollowUpAt: { $lt: now, $gt: new Date(0) }
     });
 
     // 4. Upcoming Follow-ups (scheduled at or after now and still OPEN)
     const upcomingFollowupsPromise = Lead.countDocuments({
-      currentOwner: ownerObjId,
+      ...matchOwner,
       closureStatus: 'OPEN',
       nextFollowUpAt: { $gte: now }
     });
 
-    // Get lead IDs owned by agent for cross-referencing Demos and Walk-ins
+    // Get lead IDs owned/created by agent for cross-referencing Demos and Walk-ins
     const agentLeads = await Lead.find(matchOwner).select('_id').lean();
     const agentLeadIds = agentLeads.map(l => l._id);
 
@@ -166,6 +324,7 @@ exports.agentDashboard = async (req, res, next) => {
     const todayDemosPromise = Demo.countDocuments({
       $or: [
         { salesAgent: ownerObjId },
+        { assignedBy: ownerObjId },
         { lead: { $in: agentLeadIds } }
       ],
       demoDate: { $gte: startOfToday, $lte: endOfToday }
@@ -175,6 +334,7 @@ exports.agentDashboard = async (req, res, next) => {
     const todayWalkInsPromise = WalkIn.countDocuments({
       $or: [
         { salesAgent: ownerObjId },
+        { assignedBy: ownerObjId },
         { lead: { $in: agentLeadIds } }
       ],
       $or: [
@@ -184,15 +344,15 @@ exports.agentDashboard = async (req, res, next) => {
     });
 
     // 7. Won Leads
-    const wonLeadsPromise = Lead.countDocuments({ currentOwner: ownerObjId, closureStatus: 'WON' });
+    const wonLeadsPromise = Lead.countDocuments({ ...matchOwner, closureStatus: 'WON' });
 
     // 8. Lost Leads
-    const lostLeadsPromise = Lead.countDocuments({ currentOwner: ownerObjId, closureStatus: 'LOST' });
+    const lostLeadsPromise = Lead.countDocuments({ ...matchOwner, closureStatus: 'LOST' });
 
     // 9. Actionable leads:
     // Overdue Leads
     const overdueLeadsPromise = Lead.find({
-      currentOwner: ownerObjId,
+      ...matchOwner,
       closureStatus: 'OPEN',
       nextFollowUpAt: { $lt: now, $gt: new Date(0) }
     })
@@ -203,7 +363,7 @@ exports.agentDashboard = async (req, res, next) => {
 
     // Today's Follow-up Leads (scheduled for today)
     const todayFollowupLeadsPromise = Lead.find({
-      currentOwner: ownerObjId,
+      ...matchOwner,
       closureStatus: 'OPEN',
       nextFollowUpAt: { $gte: startOfToday, $lte: endOfToday }
     })
@@ -216,6 +376,7 @@ exports.agentDashboard = async (req, res, next) => {
     const todayDemoLeadsPromise = Demo.find({
       $or: [
         { salesAgent: ownerObjId },
+        { assignedBy: ownerObjId },
         { lead: { $in: agentLeadIds } }
       ],
       demoDate: { $gte: startOfToday, $lte: endOfToday }
@@ -232,6 +393,7 @@ exports.agentDashboard = async (req, res, next) => {
     const todayWalkInLeadsPromise = WalkIn.find({
       $or: [
         { salesAgent: ownerObjId },
+        { assignedBy: ownerObjId },
         { lead: { $in: agentLeadIds } }
       ],
       $or: [
@@ -249,7 +411,7 @@ exports.agentDashboard = async (req, res, next) => {
 
     // Other required actions (e.g. Interested leads or new leads needing follow-up scheduled)
     const otherActionLeadsPromise = Lead.find({
-      currentOwner: ownerObjId,
+      ...matchOwner,
       closureStatus: 'OPEN',
       $or: [
         { latestDisposition: { $in: ['Interested', 'Demo Requested', 'Appointment Booked', 'Proposal Discussion', 'Negotiation'] }, nextFollowUpAt: { $exists: false } },
@@ -360,7 +522,13 @@ exports.reports = async (req, res, next) => {
         if (found) targetAgentId = found._id;
       }
       if (targetAgentId) {
-        match.currentOwner = targetAgentId;
+        const targetAgent = await User.findById(targetAgentId).select('agentRole').lean();
+        const isCalling = targetAgent?.agentRole?.toLowerCase().includes('calling');
+        if (isCalling) {
+          match.$or = [{ currentOwner: targetAgentId }, { createdBy: targetAgentId }];
+        } else {
+          match.currentOwner = targetAgentId;
+        }
       }
     }
     if (start || end) {
@@ -427,7 +595,9 @@ exports.reports = async (req, res, next) => {
 
     // 7. Activity Counts (Calls, Walk-ins, Demos, Follow-ups)
     const activityMatch = {};
-    if (targetAgentId) activityMatch.salesAgent = targetAgentId;
+    if (targetAgentId) {
+      activityMatch.$or = [{ salesAgent: targetAgentId }, { assignedBy: targetAgentId }];
+    }
     if (start || end) {
       activityMatch.createdAt = {};
       if (start) activityMatch.createdAt.$gte = start;
@@ -596,7 +766,7 @@ exports.reports = async (req, res, next) => {
     };
 
     const dateActivityMatch = (agentId) => {
-      const am = { salesAgent: agentId };
+      const am = { $or: [{ salesAgent: agentId }, { assignedBy: agentId }] };
       if (start || end) {
         am.createdAt = {};
         if (start) am.createdAt.$gte = start;
@@ -620,8 +790,12 @@ exports.reports = async (req, res, next) => {
           ...aCallMatch,
           followUpAt: { $exists: true, $ne: null }
         });
-        const aWonPromise = Lead.countDocuments(Object.assign({}, match, { currentOwner: aId, closureStatus: 'WON' }));
-        const aLostPromise = Lead.countDocuments(Object.assign({}, match, { currentOwner: aId, closureStatus: 'LOST' }));
+        const isCalling = (agent.agentRole || '').toLowerCase().includes('calling');
+        const aLeadFilter = isCalling
+          ? { $or: [{ currentOwner: aId }, { createdBy: aId }] }
+          : { currentOwner: aId };
+        const aWonPromise = Lead.countDocuments(Object.assign({}, match, aLeadFilter, { closureStatus: 'WON' }));
+        const aLostPromise = Lead.countDocuments(Object.assign({}, match, aLeadFilter, { closureStatus: 'LOST' }));
 
         const aFollowUpsCompPromise = (async () => {
           try {

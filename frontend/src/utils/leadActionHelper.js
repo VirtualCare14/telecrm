@@ -2,137 +2,144 @@ import { isToday, isOverdue } from './dateHelpers.js';
 
 /**
  * Returns contextual action menu items for a lead based on its current state.
- * Prevents contradictory actions (e.g. Won/Lost leads do not show active actions;
- * planned demos show reschedule/done/not done instead of schedule demo).
  *
  * @param {Object} lead
+ * @param {Object|boolean} [user] - Current logged-in user or explicit boolean flag
+ * @param {boolean} [explicitIsAdmin] - Optional explicit admin override
  * @returns {Array<{ key: string, label: string, category: string, color?: string, highlight?: boolean }>}
  */
-export function getLeadActionMenuItems(lead) {
+export function getLeadActionMenuItems(lead, user, explicitIsAdmin) {
   if (!lead) return [];
+
+  const isAdmin = typeof explicitIsAdmin === 'boolean'
+    ? explicitIsAdmin
+    : Boolean(
+        user === true ||
+        user?.role?.toUpperCase() === 'ADMIN' ||
+        (user?.agentRole && user.agentRole.toLowerCase() === 'admin') ||
+        user?.username?.toLowerCase() === 'admin'
+      );
 
   const isWon = lead.closureStatus === 'WON';
   const isLost = lead.closureStatus === 'LOST';
 
-  // 1. Closed lead: only View Lead (no contradictory active actions)
+  // 1. Closed leads: allow Transfer, View Lead, and Delete Lead (Admin only)
   if (isWon || isLost) {
-    return [
+    const items = [
+      {
+        key: 'transfer_lead',
+        label: 'Transfer Lead',
+        category: 'transfer',
+        color: '#8b5cf6',
+      },
       {
         key: 'view_lead',
         label: 'View Lead',
         category: 'view',
+        color: '#64748b',
       },
     ];
+    if (isAdmin) {
+      items.push({
+        key: 'delete_lead',
+        label: 'Delete Lead',
+        category: 'delete',
+        color: '#dc2626',
+      });
+    }
+    return items;
   }
 
-  const items = [];
-
-  // 2. Call & Follow-up actions
-  const hasFollowUp = !!lead.nextFollowUpAt;
-  const followUpDueOrOverdue =
-    hasFollowUp && (isToday(lead.nextFollowUpAt) || isOverdue(lead.nextFollowUpAt, lead.closureStatus));
-
-  if (followUpDueOrOverdue) {
-    items.push({
-      key: 'followup_now',
-      label: 'Follow-up Now',
-      category: 'call',
-      highlight: true,
-      color: '#ea580c',
-    });
-    items.push({
-      key: 'reschedule_followup',
-      label: 'Reschedule Follow-up',
-      category: 'followup',
-      color: '#d97706',
-    });
-  } else if (hasFollowUp) {
-    items.push({
-      key: 'call_now',
-      label: 'Call Now',
+  // 2. Open leads: Unified 9-action menu + Delete Lead (Admin only)
+  const items = [
+    {
+      key: 'log_call',
+      label: 'Log Call',
       category: 'call',
       color: '#0284c7',
-    });
-    items.push({
-      key: 'reschedule_followup',
-      label: 'Reschedule Follow-up',
-      category: 'followup',
-      color: '#d97706',
-    });
-  } else {
-    items.push({
-      key: 'call_now',
-      label: 'Call Now',
-      category: 'call',
-      color: '#0284c7',
-    });
-    items.push({
+    },
+    {
       key: 'schedule_followup',
       label: 'Schedule Follow-up',
       category: 'followup',
       color: '#0284c7',
-    });
-  }
-
-  // 3. Walk-in action
-  items.push({
-    key: 'record_walkin',
-    label: 'Record Walk-in',
-    category: 'walkin',
-    color: '#059669',
-  });
-
-  // 4. Demo actions
-  const demoStatus = lead.latestDemo?.status;
-  if (demoStatus === 'Planned') {
-    items.push({
-      key: 'mark_demo_done',
-      label: 'Mark Demo Done',
-      category: 'demo',
+    },
+    {
+      key: 'schedule_walkin',
+      label: 'Schedule Walk-in',
+      category: 'walkin',
       color: '#059669',
-    });
-    items.push({
-      key: 'mark_demo_not_done',
-      label: 'Mark Demo Not Done',
-      category: 'demo',
-      color: '#dc2626',
-    });
-    items.push({
-      key: 'reschedule_demo',
-      label: 'Reschedule Demo',
-      category: 'demo',
-      color: '#6366f1',
-    });
-  } else {
-    items.push({
+    },
+    {
       key: 'schedule_demo',
       label: 'Schedule Demo',
       category: 'demo',
-      color: '#6366f1',
+      color: '#4f46e5',
+    },
+    {
+      key: 'sales_followup',
+      label: 'Sales Follow-up',
+      category: 'sales_followup',
+      color: '#d97706',
+    },
+    {
+      key: 'assign_sales_agent',
+      label: 'Assign to Sales Agent',
+      category: 'assignment',
+      color: '#ea580c',
+    },
+    {
+      key: 'transfer_lead',
+      label: 'Transfer Lead',
+      category: 'transfer',
+      color: '#8b5cf6',
+    },
+    {
+      key: 'close_won',
+      label: 'Close as Won',
+      category: 'outcome',
+      color: '#059669',
+    },
+    {
+      key: 'close_lost',
+      label: 'Close as Lost',
+      category: 'outcome',
+      color: '#dc2626',
+    },
+    {
+      key: 'whatsapp_sales_agent',
+      label: 'WhatsApp Sales Agent',
+      category: 'whatsapp',
+      color: '#25D366',
+    },
+    {
+      key: 'whatsapp_demo',
+      label: 'WhatsApp Demo to Sales Agent',
+      category: 'whatsapp',
+      color: '#25D366',
+    },
+    {
+      key: 'whatsapp_walkin',
+      label: 'WhatsApp Walk-in to Sales Agent',
+      category: 'whatsapp',
+      color: '#25D366',
+    },
+    {
+      key: 'whatsapp_followup',
+      label: 'WhatsApp Follow-up to Sales Agent',
+      category: 'whatsapp',
+      color: '#25D366',
+    },
+  ];
+
+  if (isAdmin) {
+    items.push({
+      key: 'delete_lead',
+      label: 'Delete Lead',
+      category: 'delete',
+      color: '#dc2626',
     });
   }
-
-  // 5. Outcome actions
-  items.push({
-    key: 'close_won',
-    label: 'Close as Won',
-    category: 'outcome',
-    color: '#059669',
-  });
-  items.push({
-    key: 'close_lost',
-    label: 'Close as Lost',
-    category: 'outcome',
-    color: '#dc2626',
-  });
-
-  // 6. View Lead (always at the bottom)
-  items.push({
-    key: 'view_lead',
-    label: 'View Lead',
-    category: 'view',
-    color: '#64748b',
-  });
 
   return items;
 }

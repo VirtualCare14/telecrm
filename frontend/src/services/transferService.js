@@ -1,5 +1,10 @@
 import api from './api';
 
+export async function transferLead(leadId, { toAgentId, remarks, reason }) {
+  const res = await api.post(`/leads/${leadId}/transfer`, { toAgentId, remarks, reason });
+  return res.data;
+}
+
 export async function requestTransfer(leadId, toAgentId) {
   const res = await api.post(`/leads/${leadId}/transfer-request`, { toAgentId });
   return res.data.request;
@@ -27,5 +32,10 @@ export async function rejectRequest(id) {
 
 export async function cancelRequest(id) {
   const res = await api.delete(`/transfer-requests/${id}/cancel`);
+  return res.data;
+}
+
+export async function getTransferHistory(params = {}) {
+  const res = await api.get('/transfer-requests/history', { params });
   return res.data;
 }

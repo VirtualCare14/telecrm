@@ -6,8 +6,7 @@ const User = require('./src/models/User');
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
+      serverSelectionTimeoutMS: 5000,
     });
     console.log('MongoDB connected for seeding');
   } catch (err) {

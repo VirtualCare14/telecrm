@@ -33,14 +33,24 @@ router.post('/:id/call-logs', authenticate, callLogValidator.createCallLog, vali
 // Walk-in records for a lead
 router.get('/:id/walk-ins', authenticate, walkInCtrl.listWalkIns);
 router.post('/:id/walk-ins', authenticate, authorizeRole(['ADMIN', 'AGENT']), walkInValidator.createWalkIn, validate, walkInCtrl.createWalkIn);
+router.patch('/:id/walk-ins/:walkInId/status', authenticate, authorizeRole(['ADMIN', 'AGENT']), walkInCtrl.updateWalkInStatus);
 
 // Demo records for a lead
 router.get('/:id/demos', authenticate, demoCtrl.listDemos);
 router.post('/:id/demos', authenticate, authorizeRole(['ADMIN', 'AGENT']), demoValidator.createDemo, validate, demoCtrl.createDemo);
 router.patch('/:id/demos/:demoId/status', authenticate, authorizeRole(['ADMIN', 'AGENT']), demoValidator.updateDemoStatus, validate, demoCtrl.updateDemoStatus);
 
+// Sales Follow-up records for a lead
+router.get('/:id/sales-follow-ups', authenticate, leadCtrl.listSalesFollowUps);
+router.post('/:id/sales-follow-ups', authenticate, authorizeRole(['ADMIN', 'AGENT']), leadCtrl.createSalesFollowUp);
+router.patch('/:id/sales-follow-ups/:followUpId/status', authenticate, authorizeRole(['ADMIN', 'AGENT']), leadCtrl.updateSalesFollowUpStatus);
+
 // Lead activity trail
 router.get('/:id/activities', authenticate, require('../controllers/activityController').listActivities);
+router.post('/:id/whatsapp', authenticate, authorizeRole(['ADMIN', 'AGENT']), require('../controllers/activityController').createWhatsAppActivity);
+
+// Transfer lead (immediate ownership transfer with audit trail)
+router.post('/:id/transfer', authenticate, authorizeRole(['ADMIN', 'AGENT']), leadCtrl.transferLead);
 
 // Transfer requests
 router.post('/:id/transfer-request', authenticate, require('../controllers/transferController').requestTransfer);
@@ -61,6 +71,9 @@ router.patch('/:id/complete-follow-up', authenticate, leadCtrl.completeFollowUp)
 
 // Re-engage / reopen closed lead
 router.post('/:id/reopen', authenticate, leadCtrl.reopenLead);
+
+// Delete lead (Admin only)
+router.delete('/:id', authenticate, authorizeRole(['ADMIN']), leadCtrl.deleteLead);
 
 // Get single lead (must be last to avoid matching other routes)
 router.get('/:id', authenticate, leadCtrl.getLead);
