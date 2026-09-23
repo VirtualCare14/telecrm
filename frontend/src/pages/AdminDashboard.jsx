@@ -136,37 +136,37 @@ export default function AdminDashboard() {
   }
 
   const daily = kpis?.dailyActivity || {
-    newLeads: kpis?.totalLeads ?? 0,
     calls: 0,
-    followups: kpis?.upcomingFollowups ?? 0,
+    followups: 0,
+    demos: 0,
     demosScheduled: 0,
-    demosCompleted: 0,
+    walkins: 0,
     walkinsScheduled: 0,
+    salesFollowups: 0,
+    demosCompleted: 0,
     walkinsCompleted: 0,
-    overdueFollowups: kpis?.overdueFollowups ?? 0,
-    won: kpis?.totalWon ?? 0,
-    lost: kpis?.totalLost ?? 0,
+    overdueFollowups: 0,
+    won: 0,
+    lost: 0,
+    newLeads: 0,
   };
 
   const dailyActivityItems = [
     { label: 'New Leads', value: daily.newLeads ?? 0, icon: <PersonAdd sx={{ fontSize: 17 }} />, color: '#6366f1', bg: 'rgba(99, 102, 241, 0.08)', border: 'rgba(99, 102, 241, 0.22)' },
     { label: 'Calls', value: daily.calls ?? 0, icon: <PhoneInTalk sx={{ fontSize: 17 }} />, color: '#0284c7', bg: 'rgba(2, 132, 199, 0.08)', border: 'rgba(2, 132, 199, 0.22)' },
     { label: 'Follow-ups', value: daily.followups ?? 0, icon: <EventRepeat sx={{ fontSize: 17 }} />, color: '#2563eb', bg: 'rgba(37, 99, 235, 0.08)', border: 'rgba(37, 99, 235, 0.22)' },
-    { label: 'Demos Scheduled', value: daily.demosScheduled ?? 0, icon: <OndemandVideo sx={{ fontSize: 17 }} />, color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.08)', border: 'rgba(139, 92, 246, 0.22)' },
+    { label: 'Demos', value: daily.demos ?? daily.demosScheduled ?? 0, icon: <OndemandVideo sx={{ fontSize: 17 }} />, color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.08)', border: 'rgba(139, 92, 246, 0.22)' },
+    { label: 'Walk-ins', value: daily.walkins ?? daily.walkinsScheduled ?? 0, icon: <DirectionsWalk sx={{ fontSize: 17 }} />, color: '#d97706', bg: 'rgba(217, 119, 6, 0.08)', border: 'rgba(217, 119, 6, 0.22)' },
+    { label: 'Sales Follow-ups', value: daily.salesFollowups ?? 0, icon: <CalendarMonth sx={{ fontSize: 17 }} />, color: '#0891b2', bg: 'rgba(8, 145, 178, 0.08)', border: 'rgba(8, 145, 178, 0.22)' },
     { label: 'Demos Completed', value: daily.demosCompleted ?? 0, icon: <TaskAlt sx={{ fontSize: 17 }} />, color: '#059669', bg: 'rgba(5, 150, 105, 0.08)', border: 'rgba(5, 150, 105, 0.22)' },
-    { label: 'Walk-ins Scheduled', value: daily.walkinsScheduled ?? 0, icon: <DirectionsWalk sx={{ fontSize: 17 }} />, color: '#d97706', bg: 'rgba(217, 119, 6, 0.08)', border: 'rgba(217, 119, 6, 0.22)' },
     { label: 'Walk-ins Completed', value: daily.walkinsCompleted ?? 0, icon: <CheckCircleOutline sx={{ fontSize: 17 }} />, color: '#10b981', bg: 'rgba(16, 185, 129, 0.08)', border: 'rgba(16, 185, 129, 0.22)' },
     { label: 'Overdue Follow-ups', value: daily.overdueFollowups ?? 0, icon: <WarningAmber sx={{ fontSize: 17 }} />, color: '#ef4444', bg: 'rgba(239, 68, 68, 0.08)', border: 'rgba(239, 68, 68, 0.22)' },
     { label: 'Won', value: daily.won ?? 0, icon: <CheckCircle sx={{ fontSize: 17 }} />, color: '#16a34a', bg: 'rgba(22, 163, 74, 0.08)', border: 'rgba(22, 163, 74, 0.22)' },
     { label: 'Lost', value: daily.lost ?? 0, icon: <Cancel sx={{ fontSize: 17 }} />, color: '#dc2626', bg: 'rgba(220, 38, 38, 0.08)', border: 'rgba(220, 38, 38, 0.22)' },
   ];
 
-  const navigateToLeads = (params) => {
-    const combined = { ...params };
-    if (filterAgentId && !params.unassigned) combined.owner = filterAgentId;
-    const dateParams = buildDateParams();
-    Object.assign(combined, dateParams);
-    const query = new URLSearchParams(combined).toString();
+  const navigateToLeads = (params = {}) => {
+    const query = new URLSearchParams(params).toString();
     navigate(query ? `/leads?${query}` : '/leads');
   };
 
@@ -258,7 +258,7 @@ export default function AdminDashboard() {
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <AssessmentOutlined sx={{ fontSize: 20, color: 'primary.main' }} />
             <Typography variant="subtitle2" fontWeight={700} sx={{ color: 'text.primary', letterSpacing: 0.3 }}>
-              Status / Daily Activity
+              Daily Activity Status
             </Typography>
             <Chip 
               label={`${selectedAgentName} • ${selectedDateLabel}`} 

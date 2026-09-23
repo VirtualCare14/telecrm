@@ -474,14 +474,17 @@ exports.getAssignedActivities = async (req, res, next) => {
       const rawDateInput = d.demoDate || d.createdAt;
       const { scheduledDateStr, scheduledTimeStr, scheduledDateTime } = parseActivityScheduled(rawDateInput, d.demoTime || '15:00');
 
-      const isDone = d.status === 'Done';
+      const isLeadClosed = d.lead.closureStatus === 'WON' || d.lead.closureStatus === 'LOST';
+      const isDone = d.status === 'Done' || d.status === 'Completed';
       const isNotDone = d.status === 'Not Done';
-      const isToday = !isDone && !isNotDone && scheduledDateTime >= startOfToday && scheduledDateTime <= endOfToday;
-      const isOverdue = !isDone && !isNotDone && scheduledDateTime < now;
+      const isToday = !isLeadClosed && !isDone && !isNotDone && scheduledDateTime >= startOfToday && scheduledDateTime <= endOfToday;
+      const isOverdue = !isLeadClosed && !isDone && !isNotDone && scheduledDateTime < now;
 
       let computedStatus = 'Planned';
       if (isDone) computedStatus = 'Completed';
       else if (isNotDone) computedStatus = 'Not Done';
+      else if (d.lead.closureStatus === 'WON') computedStatus = 'Won';
+      else if (d.lead.closureStatus === 'LOST') computedStatus = 'Lost';
       else if (isOverdue) computedStatus = 'Overdue';
       else if (isToday) computedStatus = 'Today';
 
@@ -526,14 +529,17 @@ exports.getAssignedActivities = async (req, res, next) => {
       const rawDateInput = w.walkInDate || w.createdAt;
       const { scheduledDateStr, scheduledTimeStr, scheduledDateTime } = parseActivityScheduled(rawDateInput, w.walkInTime || '11:00');
 
+      const isLeadClosed = w.lead.closureStatus === 'WON' || w.lead.closureStatus === 'LOST';
       const isDone = w.status === 'Done' || w.status === 'Completed';
       const isNotDone = w.status === 'Not Done';
-      const isToday = !isDone && !isNotDone && scheduledDateTime >= startOfToday && scheduledDateTime <= endOfToday;
-      const isOverdue = !isDone && !isNotDone && scheduledDateTime < now;
+      const isToday = !isLeadClosed && !isDone && !isNotDone && scheduledDateTime >= startOfToday && scheduledDateTime <= endOfToday;
+      const isOverdue = !isLeadClosed && !isDone && !isNotDone && scheduledDateTime < now;
 
       let computedStatus = 'Planned';
       if (isDone) computedStatus = 'Completed';
       else if (isNotDone) computedStatus = 'Not Done';
+      else if (w.lead.closureStatus === 'WON') computedStatus = 'Won';
+      else if (w.lead.closureStatus === 'LOST') computedStatus = 'Lost';
       else if (isOverdue) computedStatus = 'Overdue';
       else if (isToday) computedStatus = 'Today';
 
@@ -580,14 +586,17 @@ exports.getAssignedActivities = async (req, res, next) => {
       const rawDateInput = f.followUpDate || f.createdAt;
       const { scheduledDateStr, scheduledTimeStr, scheduledDateTime } = parseActivityScheduled(rawDateInput, f.followUpTime || '10:00');
 
+      const isLeadClosed = f.lead.closureStatus === 'WON' || f.lead.closureStatus === 'LOST';
       const isDone = f.status === 'Done' || f.status === 'Completed';
       const isNotDone = f.status === 'Not Done';
-      const isToday = !isDone && !isNotDone && scheduledDateTime >= startOfToday && scheduledDateTime <= endOfToday;
-      const isOverdue = !isDone && !isNotDone && scheduledDateTime < now;
+      const isToday = !isLeadClosed && !isDone && !isNotDone && scheduledDateTime >= startOfToday && scheduledDateTime <= endOfToday;
+      const isOverdue = !isLeadClosed && !isDone && !isNotDone && scheduledDateTime < now;
 
       let computedStatus = 'Planned';
       if (isDone) computedStatus = 'Completed';
       else if (isNotDone) computedStatus = 'Not Done';
+      else if (f.lead.closureStatus === 'WON') computedStatus = 'Won';
+      else if (f.lead.closureStatus === 'LOST') computedStatus = 'Lost';
       else if (isOverdue) computedStatus = 'Overdue';
       else if (isToday) computedStatus = 'Today';
 

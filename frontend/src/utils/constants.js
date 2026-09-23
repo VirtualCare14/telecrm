@@ -34,7 +34,7 @@ export const ORGANIZATION_TYPES = [
 export const SOFTWARE_OPTIONS = ['Yes', 'No', 'Unknown'];
 
 export const DATE_FILTERS = [
-  { label: 'All', value: '' },
+  { label: 'All Dates', value: '' },
   { label: 'Today', value: 'today' },
   { label: 'Yesterday', value: 'yesterday' },
   { label: 'Last 7 Days', value: 'last7' },

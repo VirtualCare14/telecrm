@@ -129,6 +129,24 @@ const getStatusBadge = (status) => {
         border: '#cbd5e1',
         pulse: false,
       };
+    case 'Won':
+      return {
+        label: 'Won',
+        icon: <CheckCircle sx={{ fontSize: '14px !important', color: '#16a34a' }} />,
+        color: '#16a34a',
+        bg: '#dcfce7',
+        border: '#86efac',
+        pulse: false,
+      };
+    case 'Lost':
+      return {
+        label: 'Lost',
+        icon: <Cancel sx={{ fontSize: '14px !important', color: '#dc2626' }} />,
+        color: '#dc2626',
+        bg: '#fee2e2',
+        border: '#fca5a5',
+        pulse: false,
+      };
     case 'Planned':
     default:
       return {
@@ -269,17 +287,25 @@ export default function AssignedActivitiesSection({
 
   const handleCloseMenu = () => {
     setMenuAnchorEl(null);
-    setActiveItem(null);
   };
 
   // Open direct completion modal
   const handleOpenStatusDialog = (item, defaultStatus = 'Completed') => {
-    setActiveItem(item);
-    setTargetStatus(defaultStatus);
+    const targetItem = item || activeItem;
+    setActiveItem(targetItem);
+    setTargetStatus(defaultStatus || 'Completed');
     setCompletionRemarks('');
     setDialogError(null);
     setStatusDialogOpen(true);
-    handleCloseMenu();
+    setMenuAnchorEl(null);
+  };
+
+  const handleCloseStatusDialog = () => {
+    if (savingAction) return;
+    setStatusDialogOpen(false);
+    setActiveItem(null);
+    setDialogError(null);
+    setCompletionRemarks('');
   };
 
   const handleSaveStatus = async () => {
@@ -305,17 +331,25 @@ export default function AssignedActivitiesSection({
 
   // Open reschedule modal
   const handleOpenRescheduleDialog = (item) => {
-    setActiveItem(item);
+    const targetItem = item || activeItem;
+    setActiveItem(targetItem);
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const safeDateStr = item.scheduledDate || (item.date ? (typeof item.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(item.date) ? item.date.substring(0, 10) : formatDateToYYYYMMDD(new Date(item.date))) : formatDateToYYYYMMDD(tomorrow));
-    const safeTimeStr = item.scheduledTime || item.time || '11:00';
+    const safeDateStr = targetItem?.scheduledDate || (targetItem?.date ? (typeof targetItem.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(targetItem.date) ? targetItem.date.substring(0, 10) : formatDateToYYYYMMDD(new Date(targetItem.date))) : formatDateToYYYYMMDD(tomorrow));
+    const safeTimeStr = targetItem?.scheduledTime || targetItem?.time || '11:00';
     setRescheduleDate(safeDateStr);
     setRescheduleTime(safeTimeStr);
-    setRescheduleRemarks(item.remarks || '');
+    setRescheduleRemarks(targetItem?.remarks || '');
     setDialogError(null);
     setRescheduleDialogOpen(true);
-    handleCloseMenu();
+    setMenuAnchorEl(null);
+  };
+
+  const handleCloseRescheduleDialog = () => {
+    if (savingAction) return;
+    setRescheduleDialogOpen(false);
+    setActiveItem(null);
+    setDialogError(null);
   };
 
   const handleSaveReschedule = async () => {
@@ -1012,14 +1046,14 @@ export default function AssignedActivitiesSection({
                     {/* 8. Action Button */}
                     <TableCell align="center" sx={{ pr: { xs: 2, sm: 3 }, py: 1.5 }}>
                       <Stack direction="row" spacing={0.5} justifyContent="center" alignItems="center">
-                        {item.computedStatus !== 'Completed' ? (
+                        {item.closureStatus === 'WON' || item.closureStatus === 'LOST' || item.computedStatus === 'Won' || item.computedStatus === 'Lost' ? (
                           <Button
                             size="small"
-                            variant="contained"
-                            color={isOverdueItem ? 'error' : isTodayItem ? 'warning' : 'primary'}
+                            variant="outlined"
+                            color={item.closureStatus === 'WON' || item.computedStatus === 'Won' ? 'success' : 'inherit'}
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleOpenStatusDialog(item, 'Completed');
+                              navigate(`/leads/${item.leadId}`);
                             }}
                             sx={{
                               borderRadius: 2,
@@ -1028,12 +1062,11 @@ export default function AssignedActivitiesSection({
                               fontWeight: 700,
                               py: 0.4,
                               px: 1.25,
-                              boxShadow: 'none',
                             }}
                           >
-                            Done
+                            View
                           </Button>
-                        ) : (
+                        ) : item.computedStatus === 'Completed' ? (
                           <Button
                             size="small"
                             variant="outlined"
@@ -1053,6 +1086,27 @@ export default function AssignedActivitiesSection({
                             }}
                           >
                             Outcome
+                          </Button>
+                        ) : (
+                          <Button
+                            size="small"
+                            variant="contained"
+                            color={isOverdueItem ? 'error' : isTodayItem ? 'warning' : 'primary'}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenStatusDialog(item, 'Completed');
+                            }}
+                            sx={{
+                              borderRadius: 2,
+                              textTransform: 'none',
+                              fontSize: 11,
+                              fontWeight: 700,
+                              py: 0.4,
+                              px: 1.25,
+                              boxShadow: 'none',
+                            }}
+                          >
+                            Done
                           </Button>
                         )}
 
@@ -1083,31 +1137,35 @@ export default function AssignedActivitiesSection({
           sx: { borderRadius: 2, minWidth: 170, py: 0.5 },
         }}
       >
-        <MenuItem
-          onClick={() => handleOpenStatusDialog(activeItem, 'Completed')}
-          sx={{ fontSize: 13 }}
-        >
-          <ListItemIcon><CheckCircle sx={{ fontSize: 16, color: '#059669' }} /></ListItemIcon>
-          <ListItemText primary="Mark as Done" />
-        </MenuItem>
+        {activeItem?.closureStatus !== 'WON' && activeItem?.closureStatus !== 'LOST' && activeItem?.computedStatus !== 'Won' && activeItem?.computedStatus !== 'Lost' && (
+          <>
+            <MenuItem
+              onClick={() => handleOpenStatusDialog(activeItem, 'Completed')}
+              sx={{ fontSize: 13 }}
+            >
+              <ListItemIcon><CheckCircle sx={{ fontSize: 16, color: '#059669' }} /></ListItemIcon>
+              <ListItemText primary="Mark as Done" />
+            </MenuItem>
 
-        <MenuItem
-          onClick={() => handleOpenStatusDialog(activeItem, 'Not Done')}
-          sx={{ fontSize: 13 }}
-        >
-          <ListItemIcon><Cancel sx={{ fontSize: 16, color: '#dc2626' }} /></ListItemIcon>
-          <ListItemText primary="Mark as Not Done" />
-        </MenuItem>
+            <MenuItem
+              onClick={() => handleOpenStatusDialog(activeItem, 'Not Done')}
+              sx={{ fontSize: 13 }}
+            >
+              <ListItemIcon><Cancel sx={{ fontSize: 16, color: '#dc2626' }} /></ListItemIcon>
+              <ListItemText primary="Mark as Not Done" />
+            </MenuItem>
 
-        <MenuItem
-          onClick={() => handleOpenRescheduleDialog(activeItem)}
-          sx={{ fontSize: 13 }}
-        >
-          <ListItemIcon><Schedule sx={{ fontSize: 16, color: '#d97706' }} /></ListItemIcon>
-          <ListItemText primary="Reschedule" />
-        </MenuItem>
+            <MenuItem
+              onClick={() => handleOpenRescheduleDialog(activeItem)}
+              sx={{ fontSize: 13 }}
+            >
+              <ListItemIcon><Schedule sx={{ fontSize: 16, color: '#d97706' }} /></ListItemIcon>
+              <ListItemText primary="Reschedule" />
+            </MenuItem>
 
-        <Divider sx={{ my: 0.5 }} />
+            <Divider sx={{ my: 0.5 }} />
+          </>
+        )}
 
         <MenuItem
           onClick={() => {
@@ -1124,7 +1182,7 @@ export default function AssignedActivitiesSection({
       {/* Complete Activity Dialog */}
       <Dialog
         open={statusDialogOpen}
-        onClose={() => !savingAction && setStatusDialogOpen(false)}
+        onClose={handleCloseStatusDialog}
         maxWidth="sm"
         fullWidth
         PaperProps={{ sx: { borderRadius: 3, p: 1 } }}
@@ -1196,7 +1254,7 @@ export default function AssignedActivitiesSection({
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button
-            onClick={() => setStatusDialogOpen(false)}
+            onClick={handleCloseStatusDialog}
             disabled={savingAction}
             sx={{ borderRadius: 2, textTransform: 'none', color: '#64748b' }}
           >
@@ -1222,7 +1280,7 @@ export default function AssignedActivitiesSection({
       {/* Reschedule Activity Dialog */}
       <Dialog
         open={rescheduleDialogOpen}
-        onClose={() => !savingAction && setRescheduleDialogOpen(false)}
+        onClose={handleCloseRescheduleDialog}
         maxWidth="sm"
         fullWidth
         PaperProps={{ sx: { borderRadius: 3, p: 1 } }}
@@ -1302,7 +1360,7 @@ export default function AssignedActivitiesSection({
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button
-            onClick={() => setRescheduleDialogOpen(false)}
+            onClick={handleCloseRescheduleDialog}
             disabled={savingAction}
             sx={{ borderRadius: 2, textTransform: 'none', color: '#64748b' }}
           >

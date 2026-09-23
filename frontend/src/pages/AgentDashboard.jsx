@@ -332,24 +332,26 @@ export default function AgentDashboard() {
 
   const handleUpdateAssignedStatus = async (activity, newStatus, remarks) => {
     try {
-      if (activity.activityType === 'Demo') {
+      const type = (activity.activityType || '').toLowerCase();
+      const normalizedStatus = newStatus === 'Completed' ? 'Done' : newStatus;
+      if (type.includes('demo')) {
         await updateDemoStatus(activity.leadId, activity.id, {
-          status: newStatus === 'Completed' ? 'Done' : newStatus,
+          status: normalizedStatus,
           remarks,
         });
         setSnackbarMessage(`Demo marked as ${newStatus} successfully!`);
-      } else if (activity.activityType === 'Walk-in') {
+      } else if (type.includes('walk')) {
         await updateWalkInStatus(activity.leadId, activity.id, {
-          status: newStatus,
+          status: normalizedStatus,
           remark: remarks,
         });
         setSnackbarMessage(`Walk-in marked as ${newStatus} successfully!`);
-      } else if (activity.activityType === 'Sales Follow-up') {
+      } else if (type.includes('follow')) {
         if (activity.id.startsWith('lead_fu_')) {
           await completeFollowUp(activity.leadId, { remarks });
         } else {
           await updateSalesFollowUpStatus(activity.leadId, activity.id, {
-            status: newStatus,
+            status: normalizedStatus,
             remarks,
           });
         }
@@ -364,21 +366,22 @@ export default function AgentDashboard() {
 
   const handleRescheduleAssigned = async (activity, date, time, remarks) => {
     try {
-      if (activity.activityType === 'Demo') {
+      const type = (activity.activityType || '').toLowerCase();
+      if (type.includes('demo')) {
         await updateDemoStatus(activity.leadId, activity.id, {
           demoDate: date,
           demoTime: time,
           remarks,
         });
         setSnackbarMessage(`Demo rescheduled for ${date} at ${time}`);
-      } else if (activity.activityType === 'Walk-in') {
+      } else if (type.includes('walk')) {
         await updateWalkInStatus(activity.leadId, activity.id, {
           walkInDate: date,
           walkInTime: time,
           remark: remarks,
         });
         setSnackbarMessage(`Walk-in rescheduled for ${date} at ${time}`);
-      } else if (activity.activityType === 'Sales Follow-up') {
+      } else if (type.includes('follow')) {
         if (activity.id.startsWith('lead_fu_')) {
           await rescheduleFollowUp(activity.leadId, { followUpDate: date, followUpTime: time, remarks });
         } else {

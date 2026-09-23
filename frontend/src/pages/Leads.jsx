@@ -29,9 +29,9 @@ export default function Leads() {
     if (unassigned === 'true' || owner === 'unassigned') return 'unassigned';
     return owner || '';
   });
-  const [dateFilter, setDateFilter] = useState('');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
+  const [dateFilter, setDateFilter] = useState(() => searchParams.get('dateFilter') || '');
+  const [customStart, setCustomStart] = useState(() => searchParams.get('startDate') || '');
+  const [customEnd, setCustomEnd] = useState(() => searchParams.get('endDate') || '');
   const [closureFilter, setClosureFilter] = useState(() => searchParams.get('closureStatus') || '');
   const [followUpFilter, setFollowUpFilter] = useState(() => searchParams.get('followUpType') || '');
   const [agents, setAgents] = useState([]);
@@ -147,6 +147,9 @@ export default function Leads() {
     const followUp = searchParams.get('followUpType') || '';
     const unassigned = searchParams.get('unassigned');
     const owner = searchParams.get('owner') || searchParams.get('agentId') || '';
+    const dateParam = searchParams.get('dateFilter') || '';
+    const startParam = searchParams.get('startDate') || '';
+    const endParam = searchParams.get('endDate') || '';
 
     let nextOwner = '';
     if (unassigned === 'true' || owner === 'unassigned') {
@@ -159,11 +162,17 @@ export default function Leads() {
     setClosureFilter(closure);
     setFollowUpFilter(followUp);
     setOwnerFilter(nextOwner);
+    setDateFilter(dateParam);
+    setCustomStart(startParam);
+    setCustomEnd(endParam);
     if (!searchParams.toString()) {
       setSearch('');
       setDateFilter('');
       setCustomStart('');
       setCustomEnd('');
+      setClosureFilter('');
+      setFollowUpFilter('');
+      setOwnerFilter('');
     } else if (followUp) {
       setDateFilter('');
     }
@@ -300,7 +309,7 @@ export default function Leads() {
             <FormControl fullWidth size="small">
               <InputLabel>Status</InputLabel>
               <Select value={closureFilter} label="Status" onChange={(e) => { setClosureFilter(e.target.value); setPage(1); }} sx={{ borderRadius: 2 }}>
-                <MenuItem value="">All</MenuItem>
+                <MenuItem value="">All Statuses</MenuItem>
                 <MenuItem value="OPEN">Open</MenuItem>
                 <MenuItem value="WON">Won</MenuItem>
                 <MenuItem value="LOST">Lost</MenuItem>
