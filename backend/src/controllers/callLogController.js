@@ -19,10 +19,10 @@ exports.createCallLog = async (req, res, next) => {
       return res.status(404).json({ message: 'Lead not found' });
     }
 
-    // Authorization: Agents can only operate on their own leads
+    // Authorization: Agents can only operate on their own leads or assigned leads
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    const isOwnerOrCreator = lead.currentOwner?.toString() === req.userId || lead.createdBy?.toString() === req.userId;
-    if (!isAdmin && !isOwnerOrCreator) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ message: 'Forbidden: You can only record calls for leads assigned to you or created by you' });
@@ -83,10 +83,13 @@ exports.createCallLog = async (req, res, next) => {
     const callDoc = call[0];
 
     // Update lead summary fields
+    const callerName = req.user?.fullName || req.user?.username || 'Agent';
     const update = {
       latestDisposition: disposition,
       latestRemark: remark,
       lastCalledAt: calledAtVal,
+      updatedBy: req.userId,
+      updatedByName: callerName,
     };
     if (followUpAt) update.nextFollowUpAt = new Date(followUpAt);
     if (existingSoftwareUsed) update.existingSoftwareUsed = existingSoftwareUsed;
@@ -100,7 +103,7 @@ exports.createCallLog = async (req, res, next) => {
       action: 'Call Log Added',
       performedBy: req.userId,
       role: req.userRole,
-      metadata: { callLogId: callDoc._id.toString(), disposition, remark, followUpAt },
+      metadata: { callLogId: callDoc._id.toString(), disposition, remark, followUpAt, callerName },
     }], { session });
 
     await session.commitTransaction();

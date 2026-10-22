@@ -16,14 +16,40 @@ import {
 import { getAdminReports } from '../services/dashboardService';
 import { getAgents } from '../services/agentService';
 import DailyActivityReportSection from '../components/DailyActivityReportSection';
+import HospitalActivityReportSection from '../components/HospitalActivityReportSection';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   formatDateToYYYYMMDD, getDailyRange, getWeeklyRange,
   getMonthlyRange, formatDate, formatDateTime
 } from '../utils/dateHelpers';
 
 export default function AdminReports() {
-  // Report Tab Navigation (Daily Activity Report vs General Trend Reports)
-  const [activeReportTab, setActiveReportTab] = useState('daily');
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const urlTab = searchParams.get('tab');
+  const urlActivityType = searchParams.get('activityType') || 'ALL';
+  const urlStatus = searchParams.get('status') || 'ALL';
+  const urlAgentId = searchParams.get('agentId') || '';
+
+  // Report Tab Navigation (Daily Activity Report vs Hospital Activities vs General Trend Reports)
+  const [activeReportTab, setActiveReportTab] = useState(() => {
+    if (urlTab === 'activities' || urlTab === 'hospital-activities') return 'activities';
+    if (urlTab === 'general') return 'general';
+    return 'daily';
+  });
+
+  useEffect(() => {
+    if (urlTab === 'activities' || urlTab === 'hospital-activities') {
+      setActiveReportTab('activities');
+    } else if (urlTab === 'general') {
+      setActiveReportTab('general');
+    } else if (urlTab === 'daily') {
+      setActiveReportTab('daily');
+    }
+  }, [urlTab]);
+
 
   // Filter States
   const [reportType, setReportType] = useState('daily');
@@ -229,8 +255,10 @@ export default function AdminReports() {
     rows.push(['Calls Logged', callsCount]);
     rows.push(['Follow-ups Scheduled', followUpsScheduled]);
     rows.push(['Follow-ups Completed', followUpsCompleted]);
-    rows.push(['Overdue Follow-ups', overdueFollowups]);
-    rows.push(['Walk-ins', walkInsCount]);
+    rows.push(['Walk-ins Conducted', walkInsCount]);
+    if (reportsData.summary?.walkInsScheduled !== undefined) {
+      rows.push(['Walk-ins Planned', reportsData.summary.walkInsScheduled]);
+    }
     rows.push(['Demos Scheduled', demosCount]);
     rows.push(['Demos Completed', completedDemos]);
     rows.push(['Demos Not Done', demosNotDone]);
@@ -419,7 +447,10 @@ export default function AdminReports() {
       <Box sx={{ borderBottom: 1, borderColor: 'divider', mb: 3 }}>
         <Tabs
           value={activeReportTab}
-          onChange={(_, val) => setActiveReportTab(val)}
+          onChange={(_, val) => {
+            setActiveReportTab(val);
+            navigate(`/reports?tab=${val}`, { replace: true });
+          }}
           textColor="primary"
           indicatorColor="primary"
         >
@@ -428,6 +459,14 @@ export default function AdminReports() {
             value="daily"
             label="Daily Activity Report"
             icon={<EventNote fontSize="small" />}
+            iconPosition="start"
+            sx={{ textTransform: 'none', fontWeight: 700, fontSize: 14 }}
+          />
+          <Tab
+            id="tab-hospital-activities"
+            value="activities"
+            label="Hospital Demos & Walk-ins"
+            icon={<DirectionsWalk fontSize="small" />}
             iconPosition="start"
             sx={{ textTransform: 'none', fontWeight: 700, fontSize: 14 }}
           />
@@ -443,7 +482,24 @@ export default function AdminReports() {
       </Box>
 
       {/* 1. Dedicated Daily Activity Report */}
-      {activeReportTab === 'daily' && <DailyActivityReportSection />}
+      {activeReportTab === 'daily' && (
+        <DailyActivityReportSection
+          selectedAgentId={selectedAgentId}
+          selectedRole={selectedRole}
+          agents={agents}
+        />
+      )}
+
+      {/* 2. Dedicated Demo & Walk-in Hospital Activity List */}
+      {activeReportTab === 'activities' && (
+        <HospitalActivityReportSection
+          initialActivityType={urlActivityType}
+          initialStatus={urlStatus}
+          initialAgentId={urlAgentId}
+          agents={agents}
+        />
+      )}
+
 
       {/* 2. General Step 1 & Step 2 Reports */}
       {activeReportTab === 'general' && (
@@ -812,9 +868,16 @@ export default function AdminReports() {
                     </Box>
                   </Box>
                   <Divider sx={{ my: 1.5, borderColor: '#f1f5f9' }} />
-                  <Typography variant="caption" color="text.secondary">
-                    Hospital on-site visits logged in period
-                  </Typography>
+                  <Stack direction="row" spacing={1} justifyContent="space-between">
+                    <Typography variant="caption" color="text.secondary">
+                      Conducted: <Box component="span" fontWeight={700} color="#059669">{walkInsCount}</Box>
+                    </Typography>
+                    {reportsData?.summary?.walkInsScheduled !== undefined && (
+                      <Typography variant="caption" color="text.secondary">
+                        Planned: <Box component="span" fontWeight={700} color="#6b7280">{reportsData.summary.walkInsScheduled}</Box>
+                      </Typography>
+                    )}
+                  </Stack>
                 </Paper>
               </Grid>
             </Grid>

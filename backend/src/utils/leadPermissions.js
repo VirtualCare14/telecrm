@@ -45,19 +45,19 @@ async function canAccessLead(lead, userId, userRole, agentRole) {
   const didActivity = await LeadActivity.exists({ lead: lead._id, performedBy: userId });
   if (didActivity) return true;
 
-  // Check if assigned on latest activities
-  if (lead.latestDemo?.salesAgent?.toString() === uId) return true;
-  if (lead.latestWalkIn?.salesAgent?.toString() === uId) return true;
-  if (lead.latestSalesFollowUp?.salesAgent?.toString() === uId) return true;
+  // Check if assigned or scheduler on latest activities
+  if (lead.latestDemo?.salesAgent?.toString() === uId || lead.latestDemo?.assignedBy?.toString() === uId) return true;
+  if (lead.latestWalkIn?.salesAgent?.toString() === uId || lead.latestWalkIn?.assignedBy?.toString() === uId) return true;
+  if (lead.latestSalesFollowUp?.salesAgent?.toString() === uId || lead.latestSalesFollowUp?.assignedBy?.toString() === uId) return true;
 
-  // Check if user is assigned as salesAgent on any Demo, WalkIn, or FollowUp for this lead
-  const hasDemo = await Demo.exists({ lead: lead._id, salesAgent: userId });
+  // Check if user is assigned as salesAgent or assignedBy on any Demo, WalkIn, or FollowUp for this lead
+  const hasDemo = await Demo.exists({ lead: lead._id, $or: [{ salesAgent: userId }, { assignedBy: userId }] });
   if (hasDemo) return true;
 
-  const hasWalkIn = await WalkIn.exists({ lead: lead._id, salesAgent: userId });
+  const hasWalkIn = await WalkIn.exists({ lead: lead._id, $or: [{ salesAgent: userId }, { assignedBy: userId }] });
   if (hasWalkIn) return true;
 
-  const hasFollowUp = await FollowUp.exists({ lead: lead._id, salesAgent: userId });
+  const hasFollowUp = await FollowUp.exists({ lead: lead._id, $or: [{ salesAgent: userId }, { assignedBy: userId }] });
   if (hasFollowUp) return true;
 
   return false;

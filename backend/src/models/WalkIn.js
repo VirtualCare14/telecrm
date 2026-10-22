@@ -13,6 +13,25 @@ const walkInSchema = new mongoose.Schema({
     default: 'Planned' 
   },
   remark: { type: String, required: true },
+  latitude: { type: Number, default: null },
+  longitude: { type: Number, default: null },
+  accuracy: { type: Number, default: null },
+  locationCapturedAt: { type: Date, default: null },
+  locationStatus: { 
+    type: String, 
+    enum: ['Captured', 'Permission Denied', 'Unavailable', 'Timed Out', 'Not Requested'], 
+    default: 'Not Requested' 
+  },
+  deviceInstallationId: { type: String, default: null, trim: true },
+  hospitalLatitude: { type: Number, default: null },
+  hospitalLongitude: { type: Number, default: null },
+  distanceMetres: { type: Number, default: null },
+  geofenceStatus: {
+    type: String,
+    enum: ['Passed', 'Failed', 'Exempt', 'Not Verified'],
+    default: 'Not Verified',
+  },
+  geofenceReason: { type: String, default: null },
 }, { timestamps: true });
 
 walkInSchema.index({ lead: 1, createdAt: -1 });

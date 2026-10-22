@@ -93,6 +93,8 @@ exports.createDemo = async (req, res, next) => {
       scheduledAt: new Date(),
       updatedAt: new Date(),
     };
+    lead.updatedBy = req.userId;
+    lead.updatedByName = assignedByName;
     await lead.save({ session });
 
     // Activity log entry
@@ -187,6 +189,11 @@ exports.updateDemoStatus = async (req, res, next) => {
     }
 
     const updaterName = req.user?.fullName || req.user?.username || 'Agent';
+    const oldStatus = demo.status;
+    const oldDate = demo.demoDate;
+    const oldTime = demo.demoTime;
+    const oldRemarks = demo.remarks;
+
     demo.status = targetStatus;
     if (remarks !== undefined) demo.remarks = remarks.trim();
     if (demoDate) demo.demoDate = new Date(demoDate);
@@ -210,18 +217,32 @@ exports.updateDemoStatus = async (req, res, next) => {
       scheduledAt: lead.latestDemo?.scheduledAt || demo.createdAt,
       updatedAt: new Date(),
     };
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
     await lead.save({ session });
+
+    const isReschedule = (demoDate && new Date(demoDate).getTime() !== new Date(oldDate).getTime()) || (demoTime && demoTime.trim() !== oldTime);
+    const actionName = isReschedule ? 'Demo Rescheduled' : (oldStatus !== targetStatus ? 'Demo Status Updated' : 'Demo Updated');
 
     // Activity log entry
     await LeadActivity.create([{
       lead: leadId,
-      action: 'Demo Status Updated',
+      action: actionName,
       performedBy: req.userId,
       role: req.userRole,
       metadata: {
         demoId: demo._id.toString(),
-        status: demo.status,
-        remarks: demo.remarks,
+        previousStatus: oldStatus,
+        newStatus: demo.status,
+        previousDate: oldDate,
+        newDate: demo.demoDate,
+        previousTime: oldTime,
+        newTime: demo.demoTime,
+        previousRemarks: oldRemarks,
+        newRemarks: demo.remarks,
+        salesAgentId: demo.salesAgent ? demo.salesAgent.toString() : null,
+        salesAgentName: lead.latestDemo?.salesAgentName,
+        assignedByName: lead.latestDemo?.assignedByName,
         updatedByName: updaterName,
       },
     }], { session });

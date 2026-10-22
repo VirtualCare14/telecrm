@@ -6,11 +6,18 @@ const app = require('./app');
 
 const DEFAULT_PORT = Number(process.env.PORT) || 5000;
 
+let retries = 0;
 function startServer(port) {
   const server = http.createServer(app);
 
   server.on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
+      if (retries < 5 && port === DEFAULT_PORT) {
+        retries++;
+        console.warn(`Port ${port} is busy. Retrying in 500ms (attempt ${retries}/5)...`);
+        setTimeout(() => startServer(port), 500);
+        return;
+      }
       const fallbackPort = port + 1;
       console.warn(`Port ${port} is already in use. Retrying on port ${fallbackPort}...`);
       startServer(fallbackPort);

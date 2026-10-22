@@ -69,8 +69,14 @@ import {
   PersonAdd,
   AssignmentInd,
   WhatsApp as WhatsAppIcon,
+  AssessmentOutlined,
+  EventRepeat,
+  OndemandVideo,
+  TaskAlt,
+  CheckCircleOutline,
+  FilterAlt,
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import { logout } from '../services/authService';
 import { getAgentDashboard } from '../services/dashboardService';
@@ -81,8 +87,8 @@ import {
   createSalesFollowUp, transferLead, sendWhatsAppActivity
 } from '../services/leadsService';
 import { getActiveAgents } from '../services/agentService';
-import { formatDate, formatTime, isOverdue, isUpcoming, formatDateToYYYYMMDD, getFollowUpStatus } from '../utils/dateHelpers';
-import { CALL_DISPOSITIONS, LOST_REASONS } from '../utils/constants';
+import { formatDate, formatTime, isOverdue, isUpcoming, formatDateToYYYYMMDD, getFollowUpStatus, getDateRangeFromFilter } from '../utils/dateHelpers';
+import { CALL_DISPOSITIONS, LOST_REASONS, DATE_FILTERS } from '../utils/constants';
 import { getNextAction } from '../utils/nextActionHelper';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveSalesAgentForLead } from '../utils/whatsappHelper';
@@ -90,6 +96,10 @@ import KpiCard from '../components/dashboard/KpiCard';
 import TodayActionsSection from '../components/dashboard/TodayActionsSection';
 import RecentActivitySection from '../components/dashboard/RecentActivitySection';
 import AssignedActivitiesSection from '../components/dashboard/AssignedActivitiesSection';
+import DashboardActivityModal from '../components/DashboardActivityModal';
+import { captureCurrentLocation, getDeviceInstallationId } from '../utils/deviceLocationHelper';
+import VisitLocationCaptureBox from '../components/VisitLocationCaptureBox';
+import { calculateHaversineDistance } from '../utils/geoUtils';
 
 // Helper for demo status badges
 const getDemoStatusStyle = (status) => {
@@ -137,6 +147,7 @@ export default function AgentDashboard() {
   const user = useAuthStore((s) => s.user);
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const navigate = useNavigate();
+  const location = useLocation();
 
   const agentName = user?.fullName || user?.username || 'Agent';
   const agentRole = user?.agentRole || 'Calling Agent';
@@ -184,6 +195,17 @@ export default function AgentDashboard() {
   const [walkInRemark, setWalkInRemark] = useState('');
   const [savingWalkIn, setSavingWalkIn] = useState(false);
   const [walkInError, setWalkInError] = useState(null);
+  const [walkInLocation, setWalkInLocation] = useState({
+    status: 'Unavailable',
+    latitude: null,
+    longitude: null,
+    accuracy: null,
+    capturedAt: null,
+    error: null,
+    googleMapsUrl: null,
+  });
+  const [walkInDeviceId, setWalkInDeviceId] = useState('');
+  const [acquiringLocation, setAcquiringLocation] = useState(false);
 
   // Demo Modal State (for Sales Agent - Requirements 1, 2, 3, 7)
   const [demoOpen, setDemoOpen] = useState(false);
@@ -274,6 +296,7 @@ export default function AgentDashboard() {
 
   // Dashboard & Work Overview State (Requirements 2, 3, 5)
   const [dashboardSummary, setDashboardSummary] = useState(null);
+  const [dailyActivity, setDailyActivity] = useState({});
   const [todayActions, setTodayActions] = useState({
     overdue: [],
     todayFollowups: [],
@@ -284,29 +307,98 @@ export default function AgentDashboard() {
   const [recentActivities, setRecentActivities] = useState([]);
   const [dashboardLoading, setDashboardLoading] = useState(true);
 
+  // Calling Agent Activity Date Filter State
+  const [dateFilter, setDateFilter] = useState('thisMonth');
+  const [singleDate, setSingleDate] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7));
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  // Activity modal state for clickable cards
+  const [activityModal, setActivityModal] = useState({
+    open: false,
+    metric: '',
+    label: '',
+    icon: null,
+    color: '#0284c7',
+  });
+
+  const buildDateParams = useCallback(() => {
+    const params = {};
+    if (dateFilter) {
+      if (dateFilter === 'custom') {
+        if (customStart) params.startDate = customStart;
+        if (customEnd) params.endDate = customEnd;
+      } else if (dateFilter === 'single') {
+        if (singleDate) {
+          params.startDate = singleDate;
+          params.endDate = singleDate;
+          params.singleDate = singleDate;
+        }
+      } else if (dateFilter === 'month') {
+        if (selectedMonth) params.month = selectedMonth;
+      } else {
+        const range = getDateRangeFromFilter(dateFilter);
+        if (range.startDate) params.startDate = range.startDate;
+        if (range.endDate) params.endDate = range.endDate;
+        params.dateFilter = dateFilter;
+      }
+    }
+    return params;
+  }, [dateFilter, singleDate, selectedMonth, customStart, customEnd]);
+
+  const selectedDateLabel = (() => {
+    if (dateFilter === 'custom') {
+      if (customStart && customEnd) return `${customStart} to ${customEnd}`;
+      if (customStart) return `From ${customStart}`;
+      if (customEnd) return `Until ${customEnd}`;
+      return 'Custom Range';
+    }
+    if (dateFilter === 'single') return singleDate || 'Selected Date';
+    if (dateFilter === 'month') return selectedMonth || 'Selected Month';
+    const match = DATE_FILTERS.find((f) => f.value === dateFilter);
+    return match ? match.label : 'All Time';
+  })();
+
   const fetchDashboardData = useCallback(async () => {
     setDashboardLoading(true);
     try {
-      const res = await getAgentDashboard();
-      if (res && res.summary) {
-        setDashboardSummary(res.summary);
-      }
-      if (res && res.todayActions) {
-        setTodayActions(res.todayActions);
-      }
-      if (res && res.recentActivities) {
-        setRecentActivities(res.recentActivities);
+      const dateParams = buildDateParams();
+      const res = await getAgentDashboard(dateParams);
+      if (res) {
+        if (res.summary) {
+          setDashboardSummary(res.summary);
+        }
+        if (res.dailyActivity) {
+          setDailyActivity(res.dailyActivity);
+        }
+        if (res.todayActions) {
+          setTodayActions(res.todayActions);
+        }
+        if (res.recentActivities) {
+          setRecentActivities(res.recentActivities);
+        }
       }
     } catch (err) {
       console.error('Failed to load agent dashboard overview', err);
     } finally {
       setDashboardLoading(false);
     }
-  }, []);
+  }, [buildDateParams]);
+
+  const handleOpenActivityModal = (metric, label, icon, color) => {
+    setActivityModal({
+      open: true,
+      metric,
+      label,
+      icon,
+      color,
+    });
+  };
 
   useEffect(() => {
     fetchDashboardData();
-  }, [fetchDashboardData]);
+  }, [fetchDashboardData, location.key, location.state]);
 
   const fetchAssignedActivities = useCallback(async () => {
     if (!isSalesAgent) return;
@@ -328,7 +420,7 @@ export default function AgentDashboard() {
     if (isSalesAgent) {
       fetchAssignedActivities();
     }
-  }, [fetchAssignedActivities, isSalesAgent]);
+  }, [fetchAssignedActivities, isSalesAgent, location.key, location.state]);
 
   const handleUpdateAssignedStatus = async (activity, newStatus, remarks) => {
     try {
@@ -410,16 +502,10 @@ export default function AgentDashboard() {
       };
       if (search.trim()) params.search = search.trim();
       if (followUpFilter) params.followUpType = followUpFilter;
+      if (dispositionFilter) params.latestDisposition = dispositionFilter;
 
       const res = await listLeads(params);
-      let fetchedLeads = res.leads || [];
-
-      // Client-side disposition filter if specified
-      if (dispositionFilter) {
-        fetchedLeads = fetchedLeads.filter(
-          (l) => (l.latestDisposition || '').toLowerCase() === dispositionFilter.toLowerCase()
-        );
-      }
+      const fetchedLeads = res.leads || [];
 
       setLeads(fetchedLeads);
       setTotalLeads(res.total || 0);
@@ -433,7 +519,41 @@ export default function AgentDashboard() {
 
   useEffect(() => {
     fetchMyLeads();
-  }, [fetchMyLeads]);
+  }, [fetchMyLeads, location.key, location.state]);
+
+  // Automatic cross-agent synchronization: 30s background polling & window focus refresh
+  useEffect(() => {
+    const handleSync = () => {
+      fetchDashboardData();
+      fetchMyLeads();
+      if (isSalesAgent) {
+        fetchAssignedActivities();
+      }
+    };
+
+    const handleFocus = () => {
+      handleSync();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleSync();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const intervalId = setInterval(() => {
+      handleSync();
+    }, 30000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(intervalId);
+    };
+  }, [fetchDashboardData, fetchMyLeads, fetchAssignedActivities, isSalesAgent]);
 
   const handleLogout = async () => {
     try {
@@ -534,12 +654,36 @@ export default function AgentDashboard() {
       setRecordCallOpen(false);
       setSelectedLead(null);
       await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
     } catch (err) {
       setCallError(err.response?.data?.message || 'Failed to record call');
     } finally {
       setSavingCall(false);
     }
   };
+
+  // Trigger GPS location and persistent device ID capture for Field Visit
+  const triggerWalkInLocationCapture = useCallback(async () => {
+    setAcquiringLocation(true);
+    const { deviceInstallationId } = getDeviceInstallationId();
+    setWalkInDeviceId(deviceInstallationId);
+    try {
+      const loc = await captureCurrentLocation();
+      setWalkInLocation(loc);
+    } catch (e) {
+      setWalkInLocation({
+        status: 'Unavailable',
+        latitude: null,
+        longitude: null,
+        accuracy: null,
+        capturedAt: null,
+        error: 'Unable to acquire location.',
+        googleMapsUrl: null,
+      });
+    } finally {
+      setAcquiringLocation(false);
+    }
+  }, []);
 
   // Open Walk-in Dialog (for Sales Agent)
   const handleOpenWalkIn = (lead) => {
@@ -552,6 +696,7 @@ export default function AgentDashboard() {
     setWalkInRemark('');
     setWalkInError(null);
     setWalkInOpen(true);
+    triggerWalkInLocationCapture();
   };
 
   // Close Walk-in Dialog
@@ -584,11 +729,18 @@ export default function AgentDashboard() {
         walkInDate,
         walkInTime,
         remark: walkInRemark.trim(),
+        latitude: walkInLocation.latitude,
+        longitude: walkInLocation.longitude,
+        accuracy: walkInLocation.accuracy,
+        locationCapturedAt: walkInLocation.capturedAt,
+        locationStatus: walkInLocation.status,
+        deviceInstallationId: walkInDeviceId,
       });
       setSnackbarMessage('Walk-in recorded successfully!');
       setWalkInOpen(false);
       setSelectedWalkInLead(null);
       await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
     } catch (err) {
       setWalkInError(err.response?.data?.message || 'Failed to record walk-in');
     } finally {
@@ -685,6 +837,7 @@ export default function AgentDashboard() {
       setSelectedDemoLead(null);
       setExistingDemo(null);
       await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
     } catch (err) {
       setDemoError(err.response?.data?.message || 'Failed to save demo');
     } finally {
@@ -739,6 +892,7 @@ export default function AgentDashboard() {
       setOutcomeOpen(false);
       setSelectedOutcomeLead(null);
       await Promise.all([fetchMyLeads(), fetchDashboardData()]);
+      if (isSalesAgent) await fetchAssignedActivities();
     } catch (err) {
       setOutcomeError(err.response?.data?.message || `Failed to set outcome as ${outcomeType}`);
     } finally {
@@ -1288,6 +1442,110 @@ export default function AgentDashboard() {
   const overdueCount = leads.filter((l) => l.nextFollowUpAt && isOverdue(l.nextFollowUpAt, l.closureStatus)).length;
   const upcomingCount = leads.filter((l) => l.nextFollowUpAt && l.closureStatus === 'OPEN' && isUpcoming(l.nextFollowUpAt, l.closureStatus)).length;
 
+  const daily = dailyActivity || {};
+  const dailyActivityItems = [
+    {
+      metric: 'calls',
+      label: 'Calls',
+      value: daily.calls ?? 0,
+      icon: <PhoneInTalk sx={{ fontSize: 17 }} />,
+      color: '#0284c7',
+      bg: 'rgba(2, 132, 199, 0.08)',
+      border: 'rgba(2, 132, 199, 0.22)',
+      onClick: () => handleOpenActivityModal('calls', 'Calls', <PhoneInTalk sx={{ fontSize: 20 }} />, '#0284c7'),
+    },
+    {
+      metric: 'followups',
+      label: 'Follow-ups',
+      value: daily.followups ?? 0,
+      icon: <EventRepeat sx={{ fontSize: 17 }} />,
+      color: '#2563eb',
+      bg: 'rgba(37, 99, 235, 0.08)',
+      border: 'rgba(37, 99, 235, 0.22)',
+      onClick: () => handleOpenActivityModal('followups', 'Follow-ups', <EventRepeat sx={{ fontSize: 20 }} />, '#2563eb'),
+    },
+    {
+      metric: 'demos',
+      label: 'Demos',
+      value: daily.demos ?? daily.demosScheduled ?? 0,
+      icon: <OndemandVideo sx={{ fontSize: 17 }} />,
+      color: '#8b5cf6',
+      bg: 'rgba(139, 92, 246, 0.08)',
+      border: 'rgba(139, 92, 246, 0.22)',
+      onClick: () => handleOpenActivityModal('demos', 'Demos', <OndemandVideo sx={{ fontSize: 20 }} />, '#8b5cf6'),
+    },
+    {
+      metric: 'demosCompleted',
+      label: 'Demos Completed',
+      value: daily.demosCompleted ?? 0,
+      icon: <TaskAlt sx={{ fontSize: 17 }} />,
+      color: '#059669',
+      bg: 'rgba(5, 150, 105, 0.08)',
+      border: 'rgba(5, 150, 105, 0.22)',
+      onClick: () => handleOpenActivityModal('demosCompleted', 'Demos Completed', <TaskAlt sx={{ fontSize: 20 }} />, '#059669'),
+    },
+    {
+      metric: 'walkins',
+      label: 'Walk-ins',
+      value: daily.walkins ?? daily.walkinsScheduled ?? 0,
+      icon: <DirectionsWalk sx={{ fontSize: 17 }} />,
+      color: '#d97706',
+      bg: 'rgba(217, 119, 6, 0.08)',
+      border: 'rgba(217, 119, 6, 0.22)',
+      onClick: () => handleOpenActivityModal('walkins', 'Walk-ins', <DirectionsWalk sx={{ fontSize: 20 }} />, '#d97706'),
+    },
+    {
+      metric: 'walkinsCompleted',
+      label: 'Walk-ins Completed',
+      value: daily.walkinsCompleted ?? 0,
+      icon: <CheckCircleOutline sx={{ fontSize: 17 }} />,
+      color: '#10b981',
+      bg: 'rgba(16, 185, 129, 0.08)',
+      border: 'rgba(16, 185, 129, 0.22)',
+      onClick: () => handleOpenActivityModal('walkinsCompleted', 'Walk-ins Completed', <CheckCircleOutline sx={{ fontSize: 20 }} />, '#10b981'),
+    },
+    {
+      metric: 'overdueFollowups',
+      label: 'Overdue Follow-ups',
+      value: daily.overdueFollowups ?? 0,
+      icon: <WarningIcon sx={{ fontSize: 17 }} />,
+      color: '#ef4444',
+      bg: 'rgba(239, 68, 68, 0.08)',
+      border: 'rgba(239, 68, 68, 0.22)',
+      onClick: () => handleOpenActivityModal('overdueFollowups', 'Overdue Follow-ups', <WarningIcon sx={{ fontSize: 20 }} />, '#ef4444'),
+    },
+    {
+      metric: 'newLeads',
+      label: 'New Leads',
+      value: daily.newLeads ?? 0,
+      icon: <PersonAdd sx={{ fontSize: 17 }} />,
+      color: '#6366f1',
+      bg: 'rgba(99, 102, 241, 0.08)',
+      border: 'rgba(99, 102, 241, 0.22)',
+      onClick: () => handleOpenActivityModal('newLeads', 'New Leads', <PersonAdd sx={{ fontSize: 20 }} />, '#6366f1'),
+    },
+    {
+      metric: 'won',
+      label: 'Won',
+      value: daily.won ?? 0,
+      icon: <CheckCircle sx={{ fontSize: 17 }} />,
+      color: '#16a34a',
+      bg: 'rgba(22, 163, 74, 0.08)',
+      border: 'rgba(22, 163, 74, 0.22)',
+      onClick: () => handleOpenActivityModal('won', 'Won', <CheckCircle sx={{ fontSize: 20 }} />, '#16a34a'),
+    },
+    {
+      metric: 'lost',
+      label: 'Lost',
+      value: daily.lost ?? 0,
+      icon: <Cancel sx={{ fontSize: 17 }} />,
+      color: '#dc2626',
+      bg: 'rgba(220, 38, 38, 0.08)',
+      border: 'rgba(220, 38, 38, 0.22)',
+      onClick: () => handleOpenActivityModal('lost', 'Lost', <Cancel sx={{ fontSize: 20 }} />, '#dc2626'),
+    },
+  ];
+
   return (
     <Box sx={{ maxWidth: 1400, mx: 'auto' }}>
       {/* Top Banner / Calling Agent Workspace Header */}
@@ -1412,6 +1670,265 @@ export default function AgentDashboard() {
             </Button>
           </Stack>
         </Stack>
+      </Paper>
+
+      {/* Activity Details Modal */}
+      <DashboardActivityModal
+        open={activityModal.open}
+        onClose={() => {
+          setActivityModal((prev) => ({ ...prev, open: false }));
+          fetchDashboardData();
+          fetchMyLeads();
+          if (isSalesAgent) fetchAssignedActivities();
+        }}
+        metric={activityModal.metric}
+        metricLabel={activityModal.label}
+        icon={activityModal.icon}
+        color={activityModal.color}
+        dateParams={buildDateParams()}
+        dateFilter={dateFilter}
+        singleDate={singleDate}
+        selectedMonth={selectedMonth}
+        customStart={customStart}
+        customEnd={customEnd}
+        filterAgentId={user?._id || ''}
+        selectedAgentName={agentName}
+        selectedDateLabel={selectedDateLabel}
+      />
+
+      {/* Date Filter & Daily Activity Area for Calling Agent */}
+      <Paper
+        elevation={0}
+        sx={{
+          p: 2.5,
+          mb: 3,
+          borderRadius: 2.5,
+          border: '1px solid',
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+          boxShadow: '0 2px 10px rgba(0,0,0,0.03)',
+        }}
+      >
+        {/* Filters Controls Row */}
+        <Grid container spacing={1.5} alignItems="center" sx={{ mb: 2 }}>
+          <Grid item xs={12} sm={4} md={3}>
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                bgcolor: '#f8fafc',
+                p: 1,
+                borderRadius: 2,
+                border: '1px solid #e2e8f0',
+              }}
+            >
+              <Person sx={{ fontSize: 18, color: 'text.secondary' }} />
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', lineHeight: 1 }}>
+                  {agentRole} (Role-scoped)
+                </Typography>
+                <Typography variant="body2" fontWeight={600} noWrap sx={{ color: 'text.primary' }}>
+                  {agentName}
+                </Typography>
+              </Box>
+            </Box>
+          </Grid>
+          <Grid item xs={6} sm={4} md={2.5}>
+            <FormControl fullWidth size="small">
+              <InputLabel id="agent-date-filter-label">Date Filter</InputLabel>
+              <Select
+                labelId="agent-date-filter-label"
+                id="agent-date-filter-select"
+                value={dateFilter}
+                label="Date Filter"
+                onChange={(e) => setDateFilter(e.target.value)}
+                sx={{ borderRadius: 2 }}
+              >
+                {DATE_FILTERS.map((df) => (
+                  <MenuItem key={df.value} value={df.value}>
+                    {df.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          </Grid>
+          {dateFilter === 'single' && (
+            <Grid item xs={6} sm={4} md={2.5}>
+              <TextField
+                fullWidth
+                size="small"
+                type="date"
+                label="Select Date"
+                id="agent-dashboard-single-date-picker"
+                value={singleDate}
+                onChange={(e) => setSingleDate(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+          )}
+          {dateFilter === 'month' && (
+            <Grid item xs={6} sm={4} md={2.5}>
+              <TextField
+                fullWidth
+                size="small"
+                type="month"
+                label="Select Month"
+                id="agent-dashboard-month-picker"
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+          )}
+          {dateFilter === 'custom' && (
+            <>
+              <Grid item xs={6} sm={4} md={2}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="From"
+                  value={customStart}
+                  onChange={(e) => setCustomStart(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+              <Grid item xs={6} sm={4} md={2}>
+                <TextField
+                  fullWidth
+                  size="small"
+                  type="date"
+                  label="To"
+                  value={customEnd}
+                  onChange={(e) => setCustomEnd(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                />
+              </Grid>
+            </>
+          )}
+          {dateFilter && (
+            <Grid item xs={6} sm={2} md={1}>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={() => {
+                  setDateFilter('thisMonth');
+                  setCustomStart('');
+                  setCustomEnd('');
+                  setSingleDate(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
+                  setSelectedMonth(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7));
+                }}
+                fullWidth
+                sx={{ borderRadius: 2, textTransform: 'none', py: 0.75, color: 'text.secondary', borderColor: 'divider' }}
+              >
+                Reset
+              </Button>
+            </Grid>
+          )}
+        </Grid>
+
+        <Divider sx={{ my: 1.5, borderColor: 'divider' }} />
+
+        {/* Status / Daily Activity Section Header */}
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <AssessmentOutlined sx={{ fontSize: 20, color: 'primary.main' }} />
+            <Typography variant="subtitle2" fontWeight={700} sx={{ color: 'text.primary', letterSpacing: 0.3 }}>
+              Daily Activity Status
+            </Typography>
+            <Chip
+              label={`${agentName} (${agentRole}) • ${selectedDateLabel}`}
+              size="small"
+              sx={{
+                height: 22,
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                bgcolor: 'action.hover',
+                color: 'text.secondary',
+              }}
+            />
+          </Box>
+          <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: '0.72rem' }}>
+            Click any metric to view hospital records for the selected period
+          </Typography>
+        </Box>
+
+        {/* 10 Metric Dynamic Activity Cards */}
+        <Grid container spacing={1.2}>
+          {dailyActivityItems.map((item, idx) => (
+            <Grid item xs={6} sm={4} md={2.4} key={item.metric || idx}>
+              <Paper
+                elevation={0}
+                id={`agent-activity-card-${item.metric || idx}`}
+                data-testid={`agent-activity-card-${item.metric || idx}`}
+                onClick={item.onClick}
+                sx={{
+                  p: 1.25,
+                  borderRadius: 2,
+                  bgcolor: item.bg,
+                  border: '1px solid',
+                  borderColor: item.border,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  cursor: item.onClick ? 'pointer' : 'default',
+                  transition: 'all 0.2s ease-in-out',
+                  '&:hover': {
+                    transform: item.onClick ? 'translateY(-2px)' : 'none',
+                    boxShadow: item.onClick ? `0 4px 12px ${item.color}20` : 'none',
+                    borderColor: item.onClick ? item.color : item.border,
+                  },
+                }}
+              >
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, flex: 1 }}>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: item.color,
+                      flexShrink: 0,
+                    }}
+                  >
+                    {item.icon}
+                  </Box>
+                  <Typography
+                    variant="caption"
+                    noWrap
+                    title={item.label}
+                    sx={{
+                      fontWeight: 600,
+                      color: 'text.primary',
+                      fontSize: '0.75rem',
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    {item.label}
+                  </Typography>
+                </Box>
+                {dashboardLoading ? (
+                  <Skeleton width={24} height={24} sx={{ ml: 1, flexShrink: 0 }} />
+                ) : (
+                  <Typography
+                    variant="body2"
+                    fontWeight={800}
+                    sx={{
+                      color: item.color,
+                      fontSize: '0.95rem',
+                      ml: 1,
+                      flexShrink: 0,
+                      minWidth: 20,
+                      textAlign: 'right',
+                    }}
+                  >
+                    {item.value}
+                  </Typography>
+                )}
+              </Paper>
+            </Grid>
+          ))}
+        </Grid>
       </Paper>
 
       {/* Sales Agent Workspace: Dedicated Assigned Activities Section */}
@@ -2550,6 +3067,18 @@ export default function AgentDashboard() {
               </Grid>
             </Paper>
           )}
+
+          {/* Location & Device Verification (Requirement 2 & 3) */}
+          <Box sx={{ mb: 2.5 }}>
+            <VisitLocationCaptureBox
+              locationData={walkInLocation}
+              deviceId={walkInDeviceId}
+              hospitalCoordinates={selectedWalkInLead?.hospitalCoordinates}
+              isSalesAgent={isSalesAgent}
+              loading={acquiringLocation}
+              onRetry={triggerWalkInLocationCapture}
+            />
+          </Box>
 
           {/* Input Fields */}
           <Stack spacing={2.5}>

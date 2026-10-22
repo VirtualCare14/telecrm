@@ -3,16 +3,19 @@ import {
   Box, Typography, Paper, Grid, TextField, Button, Chip,
   Table, TableHead, TableRow, TableCell, TableBody, TableContainer,
   Pagination, Tooltip, Stack, Alert, CircularProgress,
-  MenuItem, Select, FormControl, InputLabel, InputAdornment, Card, CardContent
+  MenuItem, Select, FormControl, InputLabel, InputAdornment, Card, CardContent,
+  Dialog, DialogTitle, DialogContent, DialogActions, IconButton
 } from '@mui/material';
 import {
   FileDownload, PictureAsPdf, Refresh, PhoneInTalk,
   Business, CheckCircle, Schedule, Warning, LaptopMac,
   DirectionsWalk, EmojiEvents, Cancel, Search, CalendarMonth,
-  Today, AssignmentTurnedIn, EventNote, HourglassEmpty
+  Today, AssignmentTurnedIn, EventNote, HourglassEmpty,
+  LocationOn, LocationOff, MyLocation, OpenInNew, Close, Devices
 } from '@mui/icons-material';
 import { getDailyActivityReport, downloadDailyActivityExport } from '../services/dashboardService';
 import { generateDailyActivityPdf } from '../utils/dailyReportPdf';
+import { getAgents } from '../services/agentService';
 
 // Calculate Yesterday in Asia/Kolkata timezone
 function getYesterdayIST() {
@@ -29,12 +32,36 @@ function getTodayIST() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 }
 
-export default function DailyActivityReportSection() {
+export default function DailyActivityReportSection({ selectedAgentId = '', selectedRole = 'all', agents: propAgents = [] }) {
   const [selectedDate, setSelectedDate] = useState(() => getYesterdayIST());
+  const [activeRole, setActiveRole] = useState(selectedRole);
+  const [activeAgentId, setActiveAgentId] = useState(selectedAgentId);
+  const [agentsList, setAgentsList] = useState(propAgents);
   const [reportData, setReportData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [exportLoading, setExportLoading] = useState({ xlsx: false, csv: false, pdf: false });
+  const [visitsModalOpen, setVisitsModalOpen] = useState(false);
+
+  // Sync with prop changes if passed from parent
+  useEffect(() => {
+    setActiveRole(selectedRole);
+  }, [selectedRole]);
+
+  useEffect(() => {
+    setActiveAgentId(selectedAgentId);
+  }, [selectedAgentId]);
+
+  useEffect(() => {
+    if (propAgents && propAgents.length > 0) {
+      setAgentsList(propAgents);
+    } else {
+      getAgents().then((data) => {
+        const list = Array.isArray(data) ? data : (data?.agents || []);
+        setAgentsList(list);
+      }).catch(() => {});
+    }
+  }, [propAgents]);
 
   // Table filtering and pagination states
   const [search, setSearch] = useState('');
@@ -42,11 +69,14 @@ export default function DailyActivityReportSection() {
   const [page, setPage] = useState(1);
   const pageSize = 15;
 
-  const fetchReport = useCallback(async (dateToFetch) => {
+  const fetchReport = useCallback(async (dateToFetch, roleFilter = activeRole, agentFilter = activeAgentId) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await getDailyActivityReport({ date: dateToFetch });
+      const params = { date: dateToFetch };
+      if (roleFilter && roleFilter !== 'all') params.role = roleFilter;
+      if (agentFilter) params.agentId = agentFilter;
+      const data = await getDailyActivityReport(params);
       setReportData(data);
       setPage(1);
     } catch (err) {
@@ -55,20 +85,38 @@ export default function DailyActivityReportSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeRole, activeAgentId]);
 
   useEffect(() => {
-    fetchReport(selectedDate);
-  }, [selectedDate, fetchReport]);
+    fetchReport(selectedDate, activeRole, activeAgentId);
+  }, [selectedDate, activeRole, activeAgentId, fetchReport]);
 
   const handleDateChange = (newDate) => {
     setSelectedDate(newDate);
   };
 
+  const handleRoleChange = (newRole) => {
+    setActiveRole(newRole);
+    // If agent role does not match, reset agent
+    if (newRole !== 'all' && activeAgentId) {
+      const currentAgent = agentsList.find(a => (a._id || a.id) === activeAgentId);
+      if (currentAgent && currentAgent.agentRole?.toLowerCase() !== newRole.toLowerCase()) {
+        setActiveAgentId('');
+      }
+    }
+  };
+
+  const handleAgentChange = (newAgentId) => {
+    setActiveAgentId(newAgentId);
+  };
+
   const handleDownloadExcel = async () => {
     setExportLoading((prev) => ({ ...prev, xlsx: true }));
     try {
-      const res = await downloadDailyActivityExport({ date: selectedDate }, 'xlsx');
+      const params = { date: selectedDate };
+      if (activeRole && activeRole !== 'all') params.role = activeRole;
+      if (activeAgentId) params.agentId = activeAgentId;
+      const res = await downloadDailyActivityExport(params, 'xlsx');
       const blob = new Blob([res.data], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       });
@@ -90,7 +138,10 @@ export default function DailyActivityReportSection() {
   const handleDownloadCsv = async () => {
     setExportLoading((prev) => ({ ...prev, csv: true }));
     try {
-      const res = await downloadDailyActivityExport({ date: selectedDate }, 'csv');
+      const params = { date: selectedDate };
+      if (activeRole && activeRole !== 'all') params.role = activeRole;
+      if (activeAgentId) params.agentId = activeAgentId;
+      const res = await downloadDailyActivityExport(params, 'csv');
       const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -147,6 +198,13 @@ export default function DailyActivityReportSection() {
     return filteredRows.slice(start, start + pageSize);
   }, [filteredRows, page, pageSize]);
 
+  // Filter agents matching selected role
+  const filteredAgents = useMemo(() => {
+    if (!agentsList || agentsList.length === 0) return [];
+    if (!activeRole || activeRole === 'all') return agentsList;
+    return agentsList.filter(a => (a.agentRole || '').toLowerCase() === activeRole.toLowerCase());
+  }, [agentsList, activeRole]);
+
   // Available unique dispositions for filter dropdown
   const availableDispositions = useMemo(() => {
     if (!reportData?.hospitalActivity) return [];
@@ -171,8 +229,8 @@ export default function DailyActivityReportSection() {
         }}
       >
         <Grid container spacing={2} alignItems="center" justifyContent="space-between">
-          {/* Left: Date Selection & Shortcuts */}
-          <Grid item xs={12} lg={6}>
+          {/* Left: Date Selection, Role & Agent Filters, Shortcuts */}
+          <Grid item xs={12} xl={7}>
             <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
               <TextField
                 id="daily-report-date-picker"
@@ -182,7 +240,7 @@ export default function DailyActivityReportSection() {
                 value={selectedDate}
                 onChange={(e) => handleDateChange(e.target.value)}
                 InputLabelProps={{ shrink: true }}
-                sx={{ width: 175 }}
+                sx={{ width: 155 }}
               />
 
               <Button
@@ -197,7 +255,7 @@ export default function DailyActivityReportSection() {
                   bgcolor: selectedDate === getYesterdayIST() ? 'primary.main' : 'transparent',
                 }}
               >
-                Yesterday (Default)
+                Yesterday
               </Button>
 
               <Button
@@ -215,16 +273,53 @@ export default function DailyActivityReportSection() {
                 Today
               </Button>
 
-              <Tooltip title="Reload report data">
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => fetchReport(selectedDate)}
-                  disabled={loading}
-                  sx={{ minWidth: 38, px: 1, borderRadius: 2 }}
+              <FormControl size="small" sx={{ minWidth: 130 }}>
+                <InputLabel id="daily-role-select-label">Role</InputLabel>
+                <Select
+                  labelId="daily-role-select-label"
+                  id="daily-role-select"
+                  value={activeRole}
+                  label="Role"
+                  onChange={(e) => handleRoleChange(e.target.value)}
+                  sx={{ borderRadius: 2 }}
                 >
-                  <Refresh fontSize="small" />
-                </Button>
+                  <MenuItem value="all">All Roles</MenuItem>
+                  <MenuItem value="Sales Agent">Sales Agent</MenuItem>
+                  <MenuItem value="Calling Agent">Calling Agent</MenuItem>
+                </Select>
+              </FormControl>
+
+              <FormControl size="small" sx={{ minWidth: 150 }}>
+                <InputLabel id="daily-agent-select-label">Agent</InputLabel>
+                <Select
+                  labelId="daily-agent-select-label"
+                  id="daily-agent-select"
+                  value={activeAgentId}
+                  label="Agent"
+                  onChange={(e) => handleAgentChange(e.target.value)}
+                  sx={{ borderRadius: 2 }}
+                >
+                  <MenuItem value="">All Agents</MenuItem>
+                  {filteredAgents.map((a) => (
+                    <MenuItem key={a._id || a.id} value={a._id || a.id}>
+                      {a.fullName || a.username}
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+
+              <Tooltip title="Reload report data">
+                <span>
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    onClick={() => fetchReport(selectedDate, activeRole, activeAgentId)}
+                    disabled={loading}
+                    sx={{ minWidth: 38, px: 1, borderRadius: 2 }}
+                  >
+                    <Refresh fontSize="small" />
+                  </Button>
+                </span>
               </Tooltip>
 
               <Chip
@@ -238,8 +333,27 @@ export default function DailyActivityReportSection() {
           </Grid>
 
           {/* Right: Export Download Options */}
-          <Grid item xs={12} lg={6} sx={{ textAlign: { xs: 'left', lg: 'right' } }}>
-            <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', lg: 'flex-end' }} flexWrap="wrap" sx={{ gap: 1 }}>
+          <Grid item xs={12} xl={5} sx={{ textAlign: { xs: 'left', xl: 'right' } }}>
+            <Stack direction="row" spacing={1} justifyContent={{ xs: 'flex-start', xl: 'flex-end' }} flexWrap="wrap" sx={{ gap: 1 }}>
+              <Button
+                id="view-field-visits-gps-btn"
+                variant="outlined"
+                size="small"
+                startIcon={<LocationOn sx={{ color: '#059669' }} />}
+                onClick={() => setVisitsModalOpen(true)}
+                disabled={loading || !reportData}
+                sx={{
+                  borderRadius: 2,
+                  textTransform: 'none',
+                  fontWeight: 600,
+                  borderColor: '#059669',
+                  color: '#059669',
+                  '&:hover': { bgcolor: 'rgba(5, 150, 105, 0.08)', borderColor: '#047857' },
+                }}
+              >
+                Field Visits GPS ({reportData?.walkIns?.length || 0})
+              </Button>
+
               <Button
                 id="download-daily-excel-btn"
                 variant="contained"
@@ -743,6 +857,169 @@ export default function DailyActivityReportSection() {
           </Paper>
         </>
       )}
+
+      {/* Field Visits GPS & Device Verification Dialog (Requirement 5) */}
+      <Dialog
+        open={visitsModalOpen}
+        onClose={() => setVisitsModalOpen(false)}
+        maxWidth="lg"
+        fullWidth
+        PaperProps={{ sx: { borderRadius: 3 } }}
+      >
+        <DialogTitle sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid', borderColor: 'divider' }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <MyLocation sx={{ color: '#059669', fontSize: 24 }} />
+            <Box>
+              <Typography variant="h6" fontWeight={700}>
+                Sales Agent Field Visits & GPS Verification
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Verified visits for {selectedDate} ({reportData?.walkIns?.length || 0} visits recorded)
+              </Typography>
+            </Box>
+          </Box>
+          <IconButton onClick={() => setVisitsModalOpen(false)} size="small">
+            <Close />
+          </IconButton>
+        </DialogTitle>
+        <DialogContent sx={{ pt: 2.5 }}>
+          {(!reportData?.walkIns || reportData.walkIns.length === 0) ? (
+            <Box sx={{ py: 6, textAlign: 'center' }}>
+              <DirectionsWalk sx={{ fontSize: 40, color: 'text.secondary', mb: 1, opacity: 0.5 }} />
+              <Typography variant="body2" color="text.secondary">
+                No field visits or walk-ins recorded for {selectedDate}.
+              </Typography>
+            </Box>
+          ) : (
+            <TableContainer component={Paper} elevation={0} sx={{ border: '1px solid #e2e8f0', borderRadius: 2 }}>
+              <Table size="small">
+                <TableHead sx={{ bgcolor: '#f8fafc' }}>
+                  <TableRow>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Hospital Name & Registered Address</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Sales Agent</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Visit Date & Time</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Status</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>GPS Location Status</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Captured Coordinates</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>GPS Accuracy</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Distance</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Geofence</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }}>Device ID</TableCell>
+                    <TableCell sx={{ fontWeight: 700, fontSize: 12 }} align="center">Map Link</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {reportData.walkIns.map((w, idx) => (
+                    <TableRow key={idx} hover sx={{ '&:nth-of-type(even)': { bgcolor: '#fcfcfc' } }}>
+                      <TableCell sx={{ fontSize: 12 }}>
+                        <Typography variant="body2" fontWeight={700} sx={{ color: '#0f172a' }}>
+                          {w.hospitalName}
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.25 }}>
+                          Registered Address: {w.hospitalAddress || 'Not recorded'}
+                        </Typography>
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, fontWeight: 600 }}>
+                        {w.agentName}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+                        {w.walkInDate} {w.walkInTime !== 'N/A' ? `• ${w.walkInTime}` : ''}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12 }}>
+                        <Chip
+                          label={w.status}
+                          size="small"
+                          sx={{
+                            fontWeight: 700,
+                            fontSize: 10,
+                            height: 20,
+                            bgcolor: ['Done', 'Completed'].includes(w.status) ? 'rgba(16, 185, 129, 0.12)' : (w.status === 'Not Done' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)'),
+                            color: ['Done', 'Completed'].includes(w.status) ? '#059669' : (w.status === 'Not Done' ? '#dc2626' : '#2563eb'),
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12 }}>
+                        <Chip
+                          icon={w.latitude != null ? <LocationOn sx={{ fontSize: '13px !important' }} /> : <LocationOff sx={{ fontSize: '13px !important' }} />}
+                          label={w.locationStatus || 'Not recorded'}
+                          size="small"
+                          sx={{
+                            fontWeight: 700,
+                            fontSize: 10,
+                            height: 20,
+                            bgcolor: w.latitude != null ? 'rgba(16, 185, 129, 0.12)' : (w.locationStatus === 'Permission Denied' ? 'rgba(245, 158, 11, 0.12)' : '#f1f5f9'),
+                            color: w.latitude != null ? '#059669' : (w.locationStatus === 'Permission Denied' ? '#d97706' : '#64748b'),
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, fontFamily: 'monospace' }}>
+                        {w.latitude != null && w.longitude != null ? (
+                          `${w.latitude.toFixed(6)}, ${w.longitude.toFixed(6)}`
+                        ) : (
+                          <Typography variant="caption" sx={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                            Not recorded
+                          </Typography>
+                        )}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12 }}>
+                        {w.accuracy || 'N/A'}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, fontWeight: 600 }}>
+                        {w.distanceMetres || 'N/A'}
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12 }}>
+                        <Chip
+                          label={w.geofenceStatus || 'Not Verified'}
+                          size="small"
+                          sx={{
+                            fontWeight: 700,
+                            fontSize: 10,
+                            height: 20,
+                            bgcolor: w.geofenceStatus === 'Passed' ? 'rgba(16, 185, 129, 0.12)' : w.geofenceStatus === 'Failed' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)',
+                            color: w.geofenceStatus === 'Passed' ? '#059669' : w.geofenceStatus === 'Failed' ? '#dc2626' : '#2563eb',
+                          }}
+                        />
+                      </TableCell>
+                      <TableCell sx={{ fontSize: 12, fontFamily: 'monospace' }}>
+                        <Tooltip title={w.deviceInstallationId || 'Not recorded'}>
+                          <Typography variant="caption" sx={{ fontFamily: 'monospace', fontWeight: 600 }}>
+                            {typeof w.deviceInstallationId === 'string' && w.deviceInstallationId && w.deviceInstallationId !== 'Not recorded'
+                              ? `${w.deviceInstallationId.substring(0, 10)}...`
+                              : (w.deviceInstallationId ? String(w.deviceInstallationId) : 'Not recorded')}
+                          </Typography>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell align="center">
+                        {w.mapUrl ? (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            component="a"
+                            href={w.mapUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            startIcon={<OpenInNew sx={{ fontSize: 12 }} />}
+                            sx={{ minWidth: 'auto', py: 0.2, px: 1, fontSize: 11, textTransform: 'none', color: '#2563eb', borderColor: 'rgba(37, 99, 235, 0.3)' }}
+                          >
+                            Map
+                          </Button>
+                        ) : (
+                          <Typography variant="caption" sx={{ color: '#94a3b8' }}>—</Typography>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+          )}
+        </DialogContent>
+        <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+          <Button onClick={() => setVisitsModalOpen(false)} sx={{ borderRadius: 2, textTransform: 'none' }}>
+            Close
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }

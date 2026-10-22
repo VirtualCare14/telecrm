@@ -1,4 +1,7 @@
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const Lead = require('../models/Lead');
 const ContactPerson = require('../models/ContactPerson');
 const LeadActivity = require('../models/LeadActivity');
@@ -10,6 +13,8 @@ const Demo = require('../models/Demo');
 const WalkIn = require('../models/WalkIn');
 const { getNextSequence, formatLeadNumber } = require('../services/counterService');
 const { canAccessLead } = require('../utils/leadPermissions');
+const { classifyLead } = require('../utils/leadScoring');
+const { calculateHaversineDistance } = require('../utils/geoUtils');
 
 exports.createLead = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -37,6 +42,225 @@ exports.createLead = async (req, res, next) => {
 
     const initialRemark = (remarks !== undefined ? remarks : (sourceRemarks || '')).trim();
 
+    // Parse and sanitize initial Lead Creation Location & Device metadata
+    let createdLocation = {
+      latitude: null,
+      longitude: null,
+      accuracy: null,
+      capturedAt: null,
+      status: 'Not Requested',
+    };
+
+    const locSource = (req.body.createdLocation && typeof req.body.createdLocation === 'object') ? req.body.createdLocation : req.body;
+    const rawStatus = locSource.status || req.body.locationStatus;
+    const allowedStatuses = ['Captured', 'Permission Denied', 'Unavailable', 'Timed Out', 'Not Requested'];
+
+    if (rawStatus && allowedStatuses.includes(rawStatus)) {
+      createdLocation.status = rawStatus;
+    } else if (locSource.latitude !== undefined && locSource.latitude !== null && locSource.longitude !== undefined && locSource.longitude !== null) {
+      createdLocation.status = 'Captured';
+    }
+
+    if (locSource.latitude !== undefined && locSource.latitude !== null && locSource.latitude !== '') {
+      const lat = Number(locSource.latitude);
+      if (!Number.isNaN(lat) && lat >= -90 && lat <= 90) {
+        createdLocation.latitude = lat;
+      }
+    }
+
+    if (locSource.longitude !== undefined && locSource.longitude !== null && locSource.longitude !== '') {
+      const lng = Number(locSource.longitude);
+      if (!Number.isNaN(lng) && lng >= -180 && lng <= 180) {
+        createdLocation.longitude = lng;
+      }
+    }
+
+    if (locSource.accuracy !== undefined && locSource.accuracy !== null && locSource.accuracy !== '') {
+      const acc = Number(locSource.accuracy);
+      if (!Number.isNaN(acc) && acc >= 0) {
+        createdLocation.accuracy = Math.round(acc * 10) / 10;
+      }
+    }
+
+    const rawCapTime = locSource.capturedAt || locSource.locationCapturedAt || req.body.locationCapturedAt;
+    if (rawCapTime) {
+      const parsedTime = new Date(rawCapTime);
+      if (!Number.isNaN(parsedTime.getTime())) {
+        createdLocation.capturedAt = parsedTime;
+      }
+    } else if (createdLocation.status === 'Captured') {
+      createdLocation.capturedAt = new Date();
+    }
+
+    const rawDeviceId = req.body.createdDeviceInstallationId || req.body.deviceInstallationId || locSource.deviceInstallationId;
+    const createdDeviceInstallationId = typeof rawDeviceId === 'string' && rawDeviceId.trim() ? rawDeviceId.trim().substring(0, 128) : null;
+
+    const rawDeviceName = req.body.createdDeviceName || req.body.deviceName || locSource.deviceName;
+    const createdDeviceName = typeof rawDeviceName === 'string' && rawDeviceName.trim() ? rawDeviceName.trim().substring(0, 128) : null;
+
+    // Hospital Coordinates Extraction & Verification
+    let hospCoords = null;
+    const rawHosp = (req.body.hospitalCoordinates && typeof req.body.hospitalCoordinates === 'object') ? req.body.hospitalCoordinates : {};
+    const rawHospLat = rawHosp.latitude !== undefined && rawHosp.latitude !== null && rawHosp.latitude !== '' 
+      ? rawHosp.latitude 
+      : (req.body.hospitalLatitude !== undefined && req.body.hospitalLatitude !== null && req.body.hospitalLatitude !== '' ? req.body.hospitalLatitude : null);
+    const rawHospLng = rawHosp.longitude !== undefined && rawHosp.longitude !== null && rawHosp.longitude !== '' 
+      ? rawHosp.longitude 
+      : (req.body.hospitalLongitude !== undefined && req.body.hospitalLongitude !== null && req.body.hospitalLongitude !== '' ? req.body.hospitalLongitude : null);
+
+    if (rawHospLat != null && rawHospLng != null) {
+      const nHLat = Number(rawHospLat);
+      const nHLng = Number(rawHospLng);
+      if (!Number.isNaN(nHLat) && nHLat >= -90 && nHLat <= 90 && !Number.isNaN(nHLng) && nHLng >= -180 && nHLng <= 180) {
+        hospCoords = {
+          latitude: nHLat,
+          longitude: nHLng,
+          isVerified: rawHosp.isVerified !== undefined ? Boolean(rawHosp.isVerified) : true,
+          verifiedAt: new Date(),
+          verifiedBy: req.userId,
+          source: rawHosp.source || 'Lead Entry',
+        };
+      }
+    }
+
+    // If not supplied directly, check if existing verified coordinates exist for this hospital/organizationName
+    if (!hospCoords && organizationName) {
+      const existingVerified = await Lead.findOne({
+        organizationName: new RegExp('^' + organizationName.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i'),
+        'hospitalCoordinates.isVerified': true,
+        'hospitalCoordinates.latitude': { $ne: null },
+        'hospitalCoordinates.longitude': { $ne: null },
+      }).session(session);
+
+      if (existingVerified?.hospitalCoordinates?.isVerified) {
+        hospCoords = {
+          latitude: existingVerified.hospitalCoordinates.latitude,
+          longitude: existingVerified.hospitalCoordinates.longitude,
+          isVerified: true,
+          verifiedAt: existingVerified.hospitalCoordinates.verifiedAt || new Date(),
+          verifiedBy: existingVerified.hospitalCoordinates.verifiedBy || req.userId,
+          source: 'Verified Hospital Registry',
+        };
+      }
+    }
+
+    // Role check: Sales Agent on-site restriction vs Calling Agent remote access
+    const userAgentRole = (req.agentRole || req.user?.agentRole || creatorUser?.agentRole || '').toLowerCase();
+    const isSalesAgent = (req.userRole === 'AGENT' || req.user?.role?.toUpperCase() === 'AGENT') &&
+      userAgentRole.includes('sales');
+
+    // 1. Mandatory Live Camera Photo Validation for Sales Agent (Role-Specific)
+    let savedVisitPhoto = null;
+    const photoPayload = req.body.visitPhoto || req.body.photo;
+    let photoData = typeof photoPayload === 'string' ? photoPayload : photoPayload?.data;
+
+    if (isSalesAgent) {
+      if (!photoData || typeof photoData !== 'string' || !photoData.startsWith('data:image/')) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({
+          message: 'Mandatory live camera photo is required for Sales Agent lead creation. Please capture a live photo before submitting.',
+        });
+      }
+    }
+
+    if (photoData && typeof photoData === 'string' && photoData.startsWith('data:image/')) {
+      const matches = photoData.match(/^data:image\/([a-zA-Z0-9+]+);base64,(.+)$/);
+      if (!matches || matches.length !== 3) {
+        if (isSalesAgent) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            message: 'Invalid photo data format. Please capture a valid camera photo.',
+          });
+        }
+      } else {
+        const base64Data = matches[2];
+        const buffer = Buffer.from(base64Data, 'base64');
+
+        if (buffer.length < 500) {
+          if (isSalesAgent) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(400).json({
+              message: 'Captured photo is invalid or empty. Please capture a clear camera photo.',
+            });
+          }
+        } else if (buffer.length > 10 * 1024 * 1024) {
+          await session.abortTransaction();
+          session.endSession();
+          return res.status(400).json({
+            message: 'Captured photo exceeds the 10MB size limit. Please retake the photo.',
+          });
+        } else {
+          const isJpeg = buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF;
+          const isPng = buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
+          const isWebp = buffer.slice(0, 4).toString('ascii') === 'RIFF' && buffer.slice(8, 12).toString('ascii') === 'WEBP';
+
+          if (!isJpeg && !isPng && !isWebp) {
+            if (isSalesAgent) {
+              await session.abortTransaction();
+              session.endSession();
+              return res.status(400).json({
+                message: 'Uploaded file is not a valid image format. Please capture using the camera.',
+              });
+            }
+          } else {
+            const extension = isJpeg ? 'jpg' : isPng ? 'png' : 'webp';
+            const uploadDir = path.join(__dirname, '../../uploads/leads');
+            if (!fs.existsSync(uploadDir)) {
+              fs.mkdirSync(uploadDir, { recursive: true });
+            }
+            const filename = `lead-photo-${leadNumber}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${extension}`;
+            const filePath = path.join(uploadDir, filename);
+            fs.writeFileSync(filePath, buffer);
+
+            savedVisitPhoto = {
+              url: `/uploads/leads/${filename}`,
+              filename,
+              contentType: `image/${extension === 'jpg' ? 'jpeg' : extension}`,
+              sizeBytes: buffer.length,
+              capturedAt: photoPayload?.capturedAt ? new Date(photoPayload.capturedAt) : new Date(),
+              capturedBy: req.userId,
+              capturedByName: creatorName,
+              deviceInstallationId: createdDeviceInstallationId || photoPayload?.deviceInstallationId || null,
+            };
+          }
+        }
+      }
+    }
+
+    // 2. Location is completely OPTIONAL (never block submission for missing/inaccurate GPS)
+    if (createdLocation.latitude != null && createdLocation.longitude != null && hospCoords?.latitude != null && hospCoords?.longitude != null) {
+      const distance = calculateHaversineDistance(
+        createdLocation.latitude,
+        createdLocation.longitude,
+        hospCoords.latitude,
+        hospCoords.longitude
+      );
+      createdLocation.distanceMetres = distance;
+      if (distance !== null && distance <= 150 && (createdLocation.accuracy == null || createdLocation.accuracy <= 90)) {
+        createdLocation.geofenceStatus = 'Passed';
+        createdLocation.geofenceReason = `Within 150m radius (${Math.round(distance)}m) with accuracy ±${Math.round(createdLocation.accuracy || 0)}m`;
+      } else if (distance !== null && distance > 150) {
+        createdLocation.geofenceStatus = 'Failed';
+        createdLocation.geofenceReason = `Distance (${Math.round(distance)}m) exceeded 150m radius`;
+      } else if (createdLocation.accuracy != null && createdLocation.accuracy > 90) {
+        createdLocation.geofenceStatus = 'Failed';
+        createdLocation.geofenceReason = `GPS accuracy (±${Math.round(createdLocation.accuracy)}m) exceeded 90m threshold`;
+      } else {
+        createdLocation.geofenceStatus = 'Not Verified';
+      }
+    } else if (isSalesAgent) {
+      createdLocation.geofenceStatus = 'Not Verified';
+      createdLocation.geofenceReason = createdLocation.status === 'Permission Denied'
+        ? 'Location permission denied - visit recorded without geofence verification'
+        : 'Location optional - visit recorded without geofence verification';
+    } else {
+      createdLocation.geofenceStatus = 'Exempt';
+      createdLocation.geofenceReason = 'Calling Agent / Admin remote access exemption';
+    }
+
     const lead = await Lead.create([{
       leadNumber, organizationName, industry, organizationType, address,
       leadSource,
@@ -45,6 +269,13 @@ exports.createLead = async (req, res, next) => {
       latestRemark: initialRemark || undefined,
       currentOwner: ownerId,
       createdBy: req.userId,
+      updatedBy: req.userId,
+      updatedByName: creatorName,
+      hospitalCoordinates: hospCoords || undefined,
+      createdLocation,
+      createdDeviceInstallationId,
+      createdDeviceName,
+      visitPhoto: savedVisitPhoto || undefined,
       ownershipHistory: [{
         previousOwner: null,
         previousOwnerName: 'None (Initial Creation)',
@@ -77,7 +308,15 @@ exports.createLead = async (req, res, next) => {
     await LeadActivity.create([{
       lead: leadId, action: 'Lead Created',
       performedBy: req.userId, role: req.userRole,
-      metadata: { leadNumber, organizationName, leadSource }
+      metadata: {
+        leadNumber,
+        organizationName,
+        leadSource,
+        hospitalCoordinates: hospCoords,
+        createdLocation,
+        createdDeviceInstallationId,
+        createdDeviceName,
+      }
     }], { session });
 
     await session.commitTransaction();
@@ -90,8 +329,12 @@ exports.createLead = async (req, res, next) => {
       .lean();
     res.status(201).json({ lead: created });
   } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
+    if (session && session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    if (session) {
+      session.endSession();
+    }
     console.error('Lead creation error:', err);
     next(err);
   }
@@ -130,20 +373,45 @@ exports.listLeads = async (req, res, next) => {
     const limit = Math.min(parseInt(req.query.limit || '20', 10), 100);
     const search = (req.query.search || '').trim();
 
-    const filter = {};
+    const conditions = [];
     const ownerParam = req.query.owner || req.query.currentOwner;
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+
     if (!isAdmin) {
-      const isCallingAgent = (req.agentRole && req.agentRole.toLowerCase().includes('calling')) || (req.user?.agentRole && req.user.agentRole.toLowerCase().includes('calling'));
-      if (isCallingAgent) {
-        filter.$or = [{ currentOwner: req.userId }, { createdBy: req.userId }];
-      } else {
-        filter.currentOwner = req.userId;
-      }
+      // Agents (Calling Agents & Sales Agents) can see leads they currently own, originally created,
+      // or have assigned/scheduled activities on (demos, walk-ins, follow-ups)
+      const [demoLeadIds, walkInLeadIds, followUpLeadIds, activityLeadIds] = await Promise.all([
+        Demo.distinct('lead', { $or: [{ salesAgent: req.userId }, { assignedBy: req.userId }] }),
+        WalkIn.distinct('lead', { $or: [{ salesAgent: req.userId }, { assignedBy: req.userId }] }),
+        FollowUp.distinct('lead', { $or: [{ salesAgent: req.userId }, { assignedBy: req.userId }] }),
+        LeadActivity.distinct('lead', { performedBy: req.userId }),
+      ]);
+      const associatedLeadIds = [
+        ...new Set([
+          ...demoLeadIds.map((id) => id.toString()),
+          ...walkInLeadIds.map((id) => id.toString()),
+          ...followUpLeadIds.map((id) => id.toString()),
+          ...activityLeadIds.map((id) => id.toString()),
+        ])
+      ];
+
+      conditions.push({
+        $or: [
+          { currentOwner: req.userId },
+          { createdBy: req.userId },
+          { _id: { $in: associatedLeadIds } },
+          { 'latestDemo.salesAgent': req.userId },
+          { 'latestWalkIn.salesAgent': req.userId },
+          { 'latestSalesFollowUp.salesAgent': req.userId },
+          { 'latestDemo.assignedBy': req.userId },
+          { 'latestWalkIn.assignedBy': req.userId },
+          { 'latestSalesFollowUp.assignedBy': req.userId },
+        ]
+      });
     } else if (req.query.unassigned === 'true' || ownerParam === 'unassigned') {
       const activeAgents = await User.find({ role: 'AGENT', active: true }).select('_id');
       const activeAgentIds = activeAgents.map((a) => a._id);
-      filter.currentOwner = { $nin: activeAgentIds };
+      conditions.push({ currentOwner: { $nin: activeAgentIds } });
     } else if (ownerParam) {
       let targetAgentId = null;
       if (mongoose.Types.ObjectId.isValid(ownerParam)) {
@@ -160,55 +428,81 @@ exports.listLeads = async (req, res, next) => {
         if (matchedAgent) targetAgentId = matchedAgent._id;
       }
       if (targetAgentId) {
-        const targetAgent = await User.findById(targetAgentId).select('agentRole').lean();
-        const isCalling = targetAgent?.agentRole?.toLowerCase().includes('calling');
-        if (isCalling) {
-          filter.$or = [{ currentOwner: targetAgentId }, { createdBy: targetAgentId }];
-        } else {
-          filter.currentOwner = targetAgentId;
-        }
+        const [demoLeadIds, walkInLeadIds, followUpLeadIds] = await Promise.all([
+          Demo.distinct('lead', { $or: [{ salesAgent: targetAgentId }, { assignedBy: targetAgentId }] }),
+          WalkIn.distinct('lead', { $or: [{ salesAgent: targetAgentId }, { assignedBy: targetAgentId }] }),
+          FollowUp.distinct('lead', { $or: [{ salesAgent: targetAgentId }, { assignedBy: targetAgentId }] }),
+        ]);
+        const associatedLeadIds = [
+          ...new Set([
+            ...demoLeadIds.map((id) => id.toString()),
+            ...walkInLeadIds.map((id) => id.toString()),
+            ...followUpLeadIds.map((id) => id.toString()),
+          ])
+        ];
+        conditions.push({
+          $or: [
+            { currentOwner: targetAgentId },
+            { createdBy: targetAgentId },
+            { _id: { $in: associatedLeadIds } },
+            { 'latestDemo.salesAgent': targetAgentId },
+            { 'latestWalkIn.salesAgent': targetAgentId },
+            { 'latestSalesFollowUp.salesAgent': targetAgentId },
+          ]
+        });
       } else {
-        filter.currentOwner = ownerParam;
+        conditions.push({ currentOwner: ownerParam });
       }
     }
 
     // Date filter
     if (req.query.startDate || req.query.endDate) {
-      filter.createdAt = {};
-      if (req.query.startDate) filter.createdAt.$gte = new Date(req.query.startDate);
+      const dateCond = {};
+      if (req.query.startDate) dateCond.$gte = new Date(req.query.startDate);
       if (req.query.endDate) {
         const end = new Date(req.query.endDate);
         end.setHours(23, 59, 59, 999);
-        filter.createdAt.$lte = end;
+        dateCond.$lte = end;
       }
+      conditions.push({ createdAt: dateCond });
     }
 
     // Closure filter
     if (req.query.closureStatus) {
-      filter.closureStatus = req.query.closureStatus;
+      conditions.push({ closureStatus: req.query.closureStatus });
     }
 
     // Follow-up filter
     if (req.query.followUpType === 'upcoming') {
-      filter.nextFollowUpAt = { $gte: new Date() };
-      filter.closureStatus = 'OPEN';
+      conditions.push({ nextFollowUpAt: { $gte: new Date() }, closureStatus: 'OPEN' });
     } else if (req.query.followUpType === 'overdue') {
-      filter.nextFollowUpAt = { $lt: new Date(), $gt: new Date(0) };
-      filter.closureStatus = 'OPEN';
+      conditions.push({ nextFollowUpAt: { $lt: new Date(), $gt: new Date(0) }, closureStatus: 'OPEN' });
+    } else if (req.query.followUpType === 'today') {
+      const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      const [ty, tm, td] = todayStr.split('-').map(Number);
+      const startToday = new Date(Date.UTC(ty, tm - 1, td, 0, 0, 0, 0) - (5 * 60 + 30) * 60 * 1000);
+      const endToday = new Date(Date.UTC(ty, tm - 1, td, 23, 59, 59, 999) - (5 * 60 + 30) * 60 * 1000);
+      conditions.push({ nextFollowUpAt: { $gte: startToday, $lte: endToday }, closureStatus: 'OPEN' });
+    }
+
+    // Disposition filter
+    if (req.query.latestDisposition || req.query.disposition) {
+      const disp = req.query.latestDisposition || req.query.disposition;
+      conditions.push({ latestDisposition: disp });
     }
 
     // Search logic
     if (search) {
       const isNumeric = /^\d{1,5}$/.test(search);
       if (isNumeric) {
-        filter.leadNumber = search.padStart(5, '0');
+        conditions.push({ leadNumber: search.padStart(5, '0') });
       } else if (/^[\d+\-()\s]+$/.test(search)) {
         // Search by phone - find contacts with matching phone then get leads
         const contacts = await ContactPerson.find({
           phone: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
         }).select('lead').lean();
         const leadIds = [...new Set(contacts.map(c => c.lead.toString()))];
-        filter._id = { $in: leadIds };
+        conditions.push({ _id: { $in: leadIds } });
       } else {
         // Search by organization name or contact person name
         const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -221,20 +515,55 @@ exports.listLeads = async (req, res, next) => {
         const leadIdsFromContacts = [...new Set(contacts.map(c => c.lead.toString()))];
         
         if (leadIdsFromContacts.length > 0) {
-          filter.$or = [
-            orgMatch,
-            { _id: { $in: leadIdsFromContacts } }
-          ];
+          conditions.push({
+            $or: [
+              orgMatch,
+              { _id: { $in: leadIdsFromContacts } }
+            ]
+          });
         } else {
-          filter.organizationName = new RegExp(escapedSearch, 'i');
+          conditions.push(orgMatch);
         }
       }
+    }
+
+    const filter = conditions.length > 0 ? { $and: conditions } : {};
+
+    const temperatureParam = (req.query.temperature || '').trim();
+    if (temperatureParam) {
+      // Query matching leads sorted newest-first by createdAt with stable _id fallback
+      const allLeads = await Lead.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .populate('primaryContact')
+        .populate('currentOwner', 'fullName email username')
+        .lean();
+
+      const classified = allLeads.map((lead) => {
+        const classification = classifyLead(lead);
+        return {
+          ...lead,
+          classification,
+          temperature: classification.temperature,
+          leadScore: classification.score,
+        };
+      });
+
+      const filtered = classified.filter((l) =>
+        (l.classification?.classification || '').toLowerCase() === temperatureParam.toLowerCase() ||
+        (l.classification?.temperature || '').toLowerCase() === temperatureParam.toLowerCase()
+      );
+
+      const total = filtered.length;
+      const skip = (page - 1) * limit;
+      const pagedLeads = filtered.slice(skip, skip + limit);
+
+      return res.json({ leads: pagedLeads, page, limit, total, totalPages: Math.ceil(total / limit) || 1 });
     }
 
     const skip = (page - 1) * limit;
     const [leads, total] = await Promise.all([
       Lead.find(filter)
-        .sort({ updatedAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
         .skip(skip).limit(limit)
         .populate('primaryContact')
         .populate('currentOwner', 'fullName email username')
@@ -242,7 +571,17 @@ exports.listLeads = async (req, res, next) => {
       Lead.countDocuments(filter),
     ]);
 
-    res.json({ leads, page, limit, total, totalPages: Math.ceil(total / limit) });
+    const classifiedLeads = leads.map((lead) => {
+      const classification = classifyLead(lead);
+      return {
+        ...lead,
+        classification,
+        temperature: classification.temperature,
+        leadScore: classification.score,
+      };
+    });
+
+    res.json({ leads: classifiedLeads, page, limit, total, totalPages: Math.ceil(total / limit) });
   } catch (err) {
     next(err);
   }
@@ -254,6 +593,7 @@ exports.getLead = async (req, res, next) => {
       .populate('primaryContact')
       .populate('currentOwner', 'fullName email username phone role agentRole')
       .populate('createdBy', 'fullName email username phone role agentRole')
+      .populate('updatedBy', 'fullName email username phone role agentRole')
       .populate('closedBy', 'fullName email username phone role agentRole')
       .populate('ownershipHistory.previousOwner', 'fullName email username phone role agentRole')
       .populate('ownershipHistory.newOwner', 'fullName email username phone role agentRole')
@@ -319,6 +659,19 @@ exports.getLead = async (req, res, next) => {
     } else {
       lead.createdByName = 'Unknown';
     }
+    if (lead.updatedBy && typeof lead.updatedBy === 'object') {
+      lead.updatedByName = lead.updatedBy.fullName || lead.updatedBy.username || lead.updatedByName || lead.createdByName || 'Unknown';
+    } else if (lead.updatedByName) {
+      lead.updatedByName = lead.updatedByName;
+    } else {
+      lead.updatedByName = lead.createdByName || 'Unknown';
+    }
+
+    // Attach dynamic lead classification (pure calculation, no DB mutation)
+    lead.classification = classifyLead(lead);
+    lead.temperature = lead.classification.temperature;
+    lead.leadScore = lead.classification.score;
+
     res.json({ lead });
   } catch (err) {
     next(err);
@@ -339,12 +692,14 @@ exports.updateLead = async (req, res, next) => {
       return res.status(404).json({ message: 'Lead not found' });
     }
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(403).json({ message: 'Forbidden' });
+      return res.status(403).json({ message: 'Forbidden: You do not have permission to update this lead' });
     }
 
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
     const updates = {};
     if (organizationName !== undefined) updates.organizationName = organizationName;
     if (industry !== undefined) updates.industry = industry;
@@ -363,11 +718,44 @@ exports.updateLead = async (req, res, next) => {
     if (existingSoftwareUsed !== undefined) updates.existingSoftwareUsed = existingSoftwareUsed;
     if (softwareName !== undefined) updates.softwareName = softwareName;
 
+    // Support updating verified hospital coordinates
+    const rawHosp = (req.body.hospitalCoordinates && typeof req.body.hospitalCoordinates === 'object') ? req.body.hospitalCoordinates : {};
+    const rawHospLat = rawHosp.latitude !== undefined && rawHosp.latitude !== null && rawHosp.latitude !== '' 
+      ? rawHosp.latitude 
+      : (req.body.hospitalLatitude !== undefined && req.body.hospitalLatitude !== null && req.body.hospitalLatitude !== '' ? req.body.hospitalLatitude : undefined);
+    const rawHospLng = rawHosp.longitude !== undefined && rawHosp.longitude !== null && rawHosp.longitude !== '' 
+      ? rawHosp.longitude 
+      : (req.body.hospitalLongitude !== undefined && req.body.hospitalLongitude !== null && req.body.hospitalLongitude !== '' ? req.body.hospitalLongitude : undefined);
+
+    if (rawHospLat !== undefined || rawHospLng !== undefined || rawHosp.isVerified !== undefined) {
+      const currentHosp = lead.hospitalCoordinates || {};
+      const newLat = rawHospLat !== undefined ? (rawHospLat !== null && rawHospLat !== '' ? Number(rawHospLat) : null) : currentHosp.latitude;
+      const newLng = rawHospLng !== undefined ? (rawHospLng !== null && rawHospLng !== '' ? Number(rawHospLng) : null) : currentHosp.longitude;
+      const isVerified = rawHosp.isVerified !== undefined ? Boolean(rawHosp.isVerified) : (newLat != null && newLng != null ? true : false);
+
+      updates.hospitalCoordinates = {
+        latitude: newLat,
+        longitude: newLng,
+        isVerified,
+        verifiedAt: new Date(),
+        verifiedBy: req.userId,
+        source: rawHosp.source || (isAdmin ? 'Admin Verified' : 'Updated'),
+      };
+    }
+
+    const previousValues = {};
+    for (const key of Object.keys(updates)) {
+      previousValues[key] = lead[key];
+    }
+
+    updates.updatedBy = req.userId;
+    updates.updatedByName = updaterName;
+
     if (Object.keys(updates).length > 0) {
       await Lead.findByIdAndUpdate(leadId, updates, { session });
     }
 
-    const metadata = { updates };
+    const metadata = { updates, previousValues, updatedByName: updaterName };
     if (req.userRole === 'ADMIN') {
       metadata.adminEdit = true;
     }
@@ -415,13 +803,14 @@ exports.closeWon = async (req, res, next) => {
     }
 
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    const isOwnerOrCreatorWon = lead.currentOwner?.toString() === req.userId || lead.createdBy?.toString() === req.userId;
-    if (!isAdmin && !isOwnerOrCreatorWon) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you or created by you' });
     }
 
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
     lead.closureStatus = 'WON';
     lead.status = 'WON';
     lead.closingRemark = closingRemark;
@@ -429,13 +818,15 @@ exports.closeWon = async (req, res, next) => {
     if (product && product.trim()) lead.product = product.trim();
     lead.closedBy = req.userId;
     lead.closedAt = new Date();
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
     lead.nextFollowUpAt = null; // A Won lead must no longer appear as an active/upcoming/overdue follow-up
     await lead.save({ session });
 
     await LeadActivity.create([{
       lead: leadId, action: 'Lead Closed Won',
       performedBy: req.userId, role: req.userRole,
-      metadata: { closingRemark, dealValue, product: product ? product.trim() : undefined }
+      metadata: { closingRemark, dealValue, product: product ? product.trim() : undefined, updatedByName: updaterName }
     }], { session });
 
     await session.commitTransaction();
@@ -478,19 +869,22 @@ exports.closeLost = async (req, res, next) => {
     }
 
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    const isOwnerOrCreatorLost = lead.currentOwner?.toString() === req.userId || lead.createdBy?.toString() === req.userId;
-    if (!isAdmin && !isOwnerOrCreatorLost) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ message: 'Forbidden: You can only set outcome for leads assigned to you or created by you' });
     }
 
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
     lead.closureStatus = 'LOST';
     lead.status = 'LOST';
     lead.closingRemark = closingRemark;
     lead.lostReason = lostReason || 'Other';
     lead.closedBy = req.userId;
     lead.closedAt = new Date();
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
     lead.nextFollowUpAt = null; // A Lost lead must no longer appear as an active/upcoming/overdue follow-up
     await lead.save({ session });
 
@@ -536,7 +930,8 @@ exports.addContact = async (req, res, next) => {
       await session.abortTransaction(); session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner?.toString() !== req.userId && lead.createdBy?.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (req.userRole === 'AGENT' && !hasAccess) {
       await session.abortTransaction(); session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -557,13 +952,16 @@ exports.addContact = async (req, res, next) => {
     }], { session });
 
     if (isPrimary) {
-      await Lead.findByIdAndUpdate(leadId, { primaryContact: cp[0]._id }, { session });
+      lead.primaryContact = cp[0]._id;
     }
+    lead.updatedBy = req.userId;
+    lead.updatedByName = req.user?.fullName || req.user?.username || 'Agent';
+    await lead.save({ session });
 
     await LeadActivity.create([{
       lead: leadId, action: 'Contact Person Added',
       performedBy: req.userId, role: req.userRole,
-      metadata: { contactId: cp[0]._id.toString(), name, phone, isPrimary }
+      metadata: { contactId: cp[0]._id.toString(), name, phone, isPrimary, updatedByName: lead.updatedByName }
     }], { session });
 
     await session.commitTransaction();
@@ -589,7 +987,8 @@ exports.updateContact = async (req, res, next) => {
       await session.abortTransaction(); session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner?.toString() !== req.userId && lead.createdBy?.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (req.userRole === 'AGENT' && !hasAccess) {
       await session.abortTransaction(); session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -607,10 +1006,14 @@ exports.updateContact = async (req, res, next) => {
     if (email !== undefined) contact.email = email;
     await contact.save({ session });
 
+    lead.updatedBy = req.userId;
+    lead.updatedByName = req.user?.fullName || req.user?.username || 'Agent';
+    await lead.save({ session });
+
     await LeadActivity.create([{
       lead: leadId, action: 'Contact Person Edited',
       performedBy: req.userId, role: req.userRole,
-      metadata: { contactId }
+      metadata: { contactId, updatedByName: lead.updatedByName }
     }], { session });
 
     await session.commitTransaction();
@@ -635,7 +1038,8 @@ exports.setPrimaryContact = async (req, res, next) => {
       await session.abortTransaction(); session.endSession();
       return res.status(404).json({ message: 'Lead not found' });
     }
-    if (req.userRole === 'AGENT' && lead.currentOwner?.toString() !== req.userId && lead.createdBy?.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (req.userRole === 'AGENT' && !hasAccess) {
       await session.abortTransaction(); session.endSession();
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -651,7 +1055,10 @@ exports.setPrimaryContact = async (req, res, next) => {
     contact.isPrimary = true;
     await contact.save({ session });
 
-    await Lead.findByIdAndUpdate(leadId, { primaryContact: contactId }, { session });
+    lead.primaryContact = contactId;
+    lead.updatedBy = req.userId;
+    lead.updatedByName = req.user?.fullName || req.user?.username || 'Agent';
+    await lead.save({ session });
 
     const oldPrimaryName = (await ContactPerson.findOne({ lead: leadId, isPrimary: false }).session(session))?.name || 'unknown';
 
@@ -711,7 +1118,8 @@ exports.rescheduleFollowUp = async (req, res, next) => {
 
     // Permissions: Agents can only operate on their own leads; Admins can operate on any lead
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ message: 'Forbidden: You can only reschedule follow-ups for leads assigned to you' });
@@ -745,12 +1153,15 @@ exports.rescheduleFollowUp = async (req, res, next) => {
       return res.status(400).json({ message: 'Invalid follow-up date or time' });
     }
 
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
     const previousFollowUpAt = lead.nextFollowUpAt;
     lead.nextFollowUpAt = scheduledDate;
 
     if (remarks && typeof remarks === 'string' && remarks.trim()) {
       lead.latestRemark = remarks.trim();
     }
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
     await lead.save({ session });
 
     // Update existing CallLog in-place if one exists (prevents duplicate follow-ups)
@@ -777,6 +1188,7 @@ exports.rescheduleFollowUp = async (req, res, next) => {
         previousFollowUpAt,
         newFollowUpAt: scheduledDate,
         remarks: remarks ? remarks.trim() : '',
+        updatedByName: updaterName,
       },
     }], { session });
 
@@ -829,18 +1241,22 @@ exports.completeFollowUp = async (req, res, next) => {
 
     // Permissions: Agents can only operate on their own leads; Admins can operate on any lead
     const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
-    if (!isAdmin && lead.currentOwner?.toString() !== req.userId) {
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
       await session.abortTransaction();
       session.endSession();
       return res.status(403).json({ message: 'Forbidden: You can only complete follow-ups for leads assigned to you' });
     }
 
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
     const previousFollowUpAt = lead.nextFollowUpAt;
     lead.nextFollowUpAt = null;
 
     if (remarks && typeof remarks === 'string' && remarks.trim()) {
       lead.latestRemark = remarks.trim();
     }
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
     await lead.save({ session });
 
     // Log LeadActivity
@@ -853,6 +1269,7 @@ exports.completeFollowUp = async (req, res, next) => {
         previousFollowUpAt,
         completedAt: new Date(),
         remarks: remarks ? remarks.trim() : '',
+        updatedByName: updaterName,
       },
     }], { session });
 
@@ -1010,6 +1427,8 @@ exports.createSalesFollowUp = async (req, res, next) => {
       scheduledAt: new Date(),
       updatedAt: new Date(),
     };
+    lead.updatedBy = req.userId;
+    lead.updatedByName = assignedByName;
     await lead.save({ session });
 
     // Activity log entry
@@ -1086,6 +1505,11 @@ exports.updateSalesFollowUpStatus = async (req, res, next) => {
     }
 
     const updaterName = req.user?.fullName || req.user?.username || 'Agent';
+    const oldStatus = followUp.status;
+    const oldDate = followUp.followUpDate;
+    const oldTime = followUp.followUpTime;
+    const oldRemarks = followUp.remarks;
+
     followUp.status = targetStatus;
     followUp.remarks = finalRemarks;
     if (followUpDate) followUp.followUpDate = new Date(followUpDate);
@@ -1111,18 +1535,32 @@ exports.updateSalesFollowUpStatus = async (req, res, next) => {
       scheduledAt: lead.latestSalesFollowUp?.scheduledAt || followUp.createdAt,
       updatedAt: new Date(),
     };
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
     await lead.save({ session });
+
+    const isReschedule = (followUpDate && new Date(followUpDate).getTime() !== new Date(oldDate).getTime()) || (followUpTime && followUpTime.trim() !== oldTime);
+    const actionName = isReschedule ? 'Sales Follow-up Rescheduled' : (oldStatus !== targetStatus ? 'Sales Follow-up Status Updated' : 'Sales Follow-up Updated');
 
     // Activity log entry
     await LeadActivity.create([{
       lead: leadId,
-      action: 'Follow-up Completed',
+      action: actionName,
       performedBy: req.userId,
       role: req.userRole,
       metadata: {
         followUpId: followUp._id.toString(),
-        status: followUp.status,
-        remarks: followUp.remarks,
+        previousStatus: oldStatus,
+        newStatus: followUp.status,
+        previousDate: oldDate,
+        newDate: followUp.followUpDate,
+        previousTime: oldTime,
+        newTime: followUp.followUpTime,
+        previousRemarks: oldRemarks,
+        newRemarks: followUp.remarks,
+        salesAgentId: followUp.salesAgent ? followUp.salesAgent.toString() : null,
+        salesAgentName: lead.latestSalesFollowUp?.salesAgentName,
+        assignedByName: lead.latestSalesFollowUp?.assignedByName,
         updatedByName: updaterName,
         activityType: 'Sales Follow-up',
       },
@@ -1231,6 +1669,8 @@ exports.transferLead = async (req, res, next) => {
       isInitial: false,
     });
 
+    lead.updatedBy = req.userId;
+    lead.updatedByName = req.user ? (req.user.fullName || req.user.username) : 'System';
     await lead.save({ session });
 
     // Cancel or approve any existing pending transfer requests for this lead

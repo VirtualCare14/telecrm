@@ -7,12 +7,14 @@ import {
   Business, CalendarMonth, Warning, People, CheckCircle, Cancel,
   FilterList, PersonOff, PersonAdd, PhoneInTalk, EventRepeat,
   OndemandVideo, TaskAlt, DirectionsWalk, CheckCircleOutline,
-  WarningAmber, Insights, AssessmentOutlined
+  WarningAmber, Insights, AssessmentOutlined, FileDownload
 } from '@mui/icons-material';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import KpiCard from '../components/dashboard/KpiCard';
 import LeadTable from '../components/LeadTable';
 import AgentPerformanceTable from '../components/dashboard/AgentPerformanceTable';
+import ExportRawDumpModal from '../components/ExportRawDumpModal';
+import DashboardActivityModal from '../components/DashboardActivityModal';
 import { getAdminDashboard } from '../services/dashboardService';
 import { getAgents } from '../services/agentService';
 import { listLeads } from '../services/leadsService';
@@ -33,27 +35,51 @@ export default function AdminDashboard() {
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [filterAgentId, setFilterAgentId] = useState('');
   const [dateFilter, setDateFilter] = useState('');
+  const [singleDate, setSingleDate] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
+  const [selectedMonth, setSelectedMonth] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7));
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [recentLeads, setRecentLeads] = useState([]);
   const [recentLoading, setRecentLoading] = useState(false);
   const [activeLeadTab, setActiveLeadTab] = useState('all');
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [activityModal, setActivityModal] = useState({
+    open: false,
+    metric: '',
+    label: '',
+    icon: null,
+    color: '#2563eb',
+  });
   const navigate = useNavigate();
+  const location = useLocation();
 
   const buildDateParams = useCallback(() => {
     const params = {};
-    if (dateFilter) {
-      if (dateFilter === 'custom') {
-        if (customStart) params.startDate = customStart;
-        if (customEnd) params.endDate = customEnd;
-      } else {
-        const range = getDateRangeFromFilter(dateFilter);
-        if (range.startDate) params.startDate = range.startDate;
-        if (range.endDate) params.endDate = range.endDate;
-      }
+    if (!dateFilter) return params;
+
+    if (dateFilter === 'custom') {
+      if (customStart) params.startDate = customStart;
+      if (customEnd) params.endDate = customEnd;
+    } else if (dateFilter === 'single') {
+      const d = singleDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      params.startDate = d;
+      params.endDate = d;
+      params.singleDate = d;
+    } else if (dateFilter === 'month') {
+      const m = selectedMonth || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7);
+      const [year, mon] = m.split('-').map(Number);
+      const lastDay = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+      params.startDate = `${m}-01`;
+      params.endDate = `${m}-${String(lastDay).padStart(2, '0')}`;
+      params.month = m;
+    } else {
+      const range = getDateRangeFromFilter(dateFilter, { singleDate, selectedMonth, customStart, customEnd });
+      if (range.startDate) params.startDate = range.startDate;
+      if (range.endDate) params.endDate = range.endDate;
+      params.dateFilter = dateFilter;
     }
     return params;
-  }, [dateFilter, customStart, customEnd]);
+  }, [dateFilter, singleDate, selectedMonth, customStart, customEnd]);
 
   const fetchDashboard = useCallback(async () => {
     setLoading(true);
@@ -116,6 +142,38 @@ export default function AdminDashboard() {
     fetchDashboard();
     fetchAgents();
     fetchRecentLeads();
+  }, [fetchDashboard, fetchAgents, fetchRecentLeads, location.key, location.state]);
+
+  // Automatic cross-agent synchronization: 30s background polling & window focus refresh
+  useEffect(() => {
+    const handleSync = () => {
+      fetchDashboard();
+      fetchAgents();
+      fetchRecentLeads();
+    };
+
+    const handleFocus = () => {
+      handleSync();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleSync();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const intervalId = setInterval(() => {
+      handleSync();
+    }, 30000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(intervalId);
+    };
   }, [fetchDashboard, fetchAgents, fetchRecentLeads]);
 
   const displayedAgents = filterAgentId
@@ -128,7 +186,11 @@ export default function AdminDashboard() {
   let selectedDateLabel = 'All Time';
   if (dateFilter) {
     if (dateFilter === 'custom') {
-      selectedDateLabel = customStart || customEnd ? `${customStart || 'Start'} to ${customEnd || 'End'}` : 'Custom Range';
+      selectedDateLabel = (customStart || customEnd) ? `${customStart || 'Start'} to ${customEnd || 'End'}` : 'Custom Range';
+    } else if (dateFilter === 'single') {
+      selectedDateLabel = singleDate ? `Date: ${singleDate}` : 'Single Date';
+    } else if (dateFilter === 'month') {
+      selectedDateLabel = selectedMonth ? `Month: ${selectedMonth}` : 'Selected Month';
     } else {
       const found = DATE_FILTERS.find((df) => df.value === dateFilter);
       selectedDateLabel = found ? found.label : dateFilter;
@@ -151,33 +213,217 @@ export default function AdminDashboard() {
     newLeads: 0,
   };
 
-  const dailyActivityItems = [
-    { label: 'New Leads', value: daily.newLeads ?? 0, icon: <PersonAdd sx={{ fontSize: 17 }} />, color: '#6366f1', bg: 'rgba(99, 102, 241, 0.08)', border: 'rgba(99, 102, 241, 0.22)' },
-    { label: 'Calls', value: daily.calls ?? 0, icon: <PhoneInTalk sx={{ fontSize: 17 }} />, color: '#0284c7', bg: 'rgba(2, 132, 199, 0.08)', border: 'rgba(2, 132, 199, 0.22)' },
-    { label: 'Follow-ups', value: daily.followups ?? 0, icon: <EventRepeat sx={{ fontSize: 17 }} />, color: '#2563eb', bg: 'rgba(37, 99, 235, 0.08)', border: 'rgba(37, 99, 235, 0.22)' },
-    { label: 'Demos', value: daily.demos ?? daily.demosScheduled ?? 0, icon: <OndemandVideo sx={{ fontSize: 17 }} />, color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.08)', border: 'rgba(139, 92, 246, 0.22)' },
-    { label: 'Walk-ins', value: daily.walkins ?? daily.walkinsScheduled ?? 0, icon: <DirectionsWalk sx={{ fontSize: 17 }} />, color: '#d97706', bg: 'rgba(217, 119, 6, 0.08)', border: 'rgba(217, 119, 6, 0.22)' },
-    { label: 'Sales Follow-ups', value: daily.salesFollowups ?? 0, icon: <CalendarMonth sx={{ fontSize: 17 }} />, color: '#0891b2', bg: 'rgba(8, 145, 178, 0.08)', border: 'rgba(8, 145, 178, 0.22)' },
-    { label: 'Demos Completed', value: daily.demosCompleted ?? 0, icon: <TaskAlt sx={{ fontSize: 17 }} />, color: '#059669', bg: 'rgba(5, 150, 105, 0.08)', border: 'rgba(5, 150, 105, 0.22)' },
-    { label: 'Walk-ins Completed', value: daily.walkinsCompleted ?? 0, icon: <CheckCircleOutline sx={{ fontSize: 17 }} />, color: '#10b981', bg: 'rgba(16, 185, 129, 0.08)', border: 'rgba(16, 185, 129, 0.22)' },
-    { label: 'Overdue Follow-ups', value: daily.overdueFollowups ?? 0, icon: <WarningAmber sx={{ fontSize: 17 }} />, color: '#ef4444', bg: 'rgba(239, 68, 68, 0.08)', border: 'rgba(239, 68, 68, 0.22)' },
-    { label: 'Won', value: daily.won ?? 0, icon: <CheckCircle sx={{ fontSize: 17 }} />, color: '#16a34a', bg: 'rgba(22, 163, 74, 0.08)', border: 'rgba(22, 163, 74, 0.22)' },
-    { label: 'Lost', value: daily.lost ?? 0, icon: <Cancel sx={{ fontSize: 17 }} />, color: '#dc2626', bg: 'rgba(220, 38, 38, 0.08)', border: 'rgba(220, 38, 38, 0.22)' },
-  ];
-
   const navigateToLeads = (params = {}) => {
     const query = new URLSearchParams(params).toString();
     navigate(query ? `/leads?${query}` : '/leads');
   };
 
+  const handleOpenActivityModal = (metric, label, icon, color) => {
+    setActivityModal({
+      open: true,
+      metric,
+      label,
+      icon,
+      color,
+    });
+  };
+
+  const dailyActivityItems = [
+    {
+      metric: 'newLeads',
+      label: 'New Leads',
+      value: daily.newLeads ?? 0,
+      icon: <PersonAdd sx={{ fontSize: 17 }} />,
+      color: '#6366f1',
+      bg: 'rgba(99, 102, 241, 0.08)',
+      border: 'rgba(99, 102, 241, 0.22)',
+      onClick: () => handleOpenActivityModal('newLeads', 'New Leads', <PersonAdd sx={{ fontSize: 20 }} />, '#6366f1'),
+    },
+    {
+      metric: 'calls',
+      label: 'Calls',
+      value: daily.calls ?? 0,
+      icon: <PhoneInTalk sx={{ fontSize: 17 }} />,
+      color: '#0284c7',
+      bg: 'rgba(2, 132, 199, 0.08)',
+      border: 'rgba(2, 132, 199, 0.22)',
+      onClick: () => handleOpenActivityModal('calls', 'Calls', <PhoneInTalk sx={{ fontSize: 20 }} />, '#0284c7'),
+    },
+    {
+      metric: 'followups',
+      label: 'Follow-ups',
+      value: daily.followups ?? 0,
+      icon: <EventRepeat sx={{ fontSize: 17 }} />,
+      color: '#2563eb',
+      bg: 'rgba(37, 99, 235, 0.08)',
+      border: 'rgba(37, 99, 235, 0.22)',
+      onClick: () => handleOpenActivityModal('followups', 'Follow-ups', <EventRepeat sx={{ fontSize: 20 }} />, '#2563eb'),
+    },
+    {
+      metric: 'demos',
+      label: 'Demos',
+      value: daily.demos ?? daily.demosScheduled ?? 0,
+      icon: <OndemandVideo sx={{ fontSize: 17 }} />,
+      color: '#8b5cf6',
+      bg: 'rgba(139, 92, 246, 0.08)',
+      border: 'rgba(139, 92, 246, 0.22)',
+      onClick: () => handleOpenActivityModal('demos', 'Demos', <OndemandVideo sx={{ fontSize: 20 }} />, '#8b5cf6'),
+    },
+    {
+      metric: 'walkins',
+      label: 'Walk-ins',
+      value: daily.walkins ?? daily.walkinsScheduled ?? 0,
+      icon: <DirectionsWalk sx={{ fontSize: 17 }} />,
+      color: '#d97706',
+      bg: 'rgba(217, 119, 6, 0.08)',
+      border: 'rgba(217, 119, 6, 0.22)',
+      onClick: () => handleOpenActivityModal('walkins', 'Walk-ins', <DirectionsWalk sx={{ fontSize: 20 }} />, '#d97706'),
+    },
+    {
+      metric: 'salesFollowups',
+      label: 'Sales Follow-ups',
+      value: daily.salesFollowups ?? 0,
+      icon: <CalendarMonth sx={{ fontSize: 17 }} />,
+      color: '#0891b2',
+      bg: 'rgba(8, 145, 178, 0.08)',
+      border: 'rgba(8, 145, 178, 0.22)',
+      onClick: () => handleOpenActivityModal('salesFollowups', 'Sales Follow-ups', <CalendarMonth sx={{ fontSize: 20 }} />, '#0891b2'),
+    },
+    {
+      metric: 'demosCompleted',
+      label: 'Demos Completed',
+      value: daily.demosCompleted ?? 0,
+      icon: <TaskAlt sx={{ fontSize: 17 }} />,
+      color: '#059669',
+      bg: 'rgba(5, 150, 105, 0.08)',
+      border: 'rgba(5, 150, 105, 0.22)',
+      onClick: () => handleOpenActivityModal('demosCompleted', 'Demos Completed', <TaskAlt sx={{ fontSize: 20 }} />, '#059669'),
+    },
+    {
+      metric: 'walkinsCompleted',
+      label: 'Walk-ins Completed',
+      value: daily.walkinsCompleted ?? 0,
+      icon: <CheckCircleOutline sx={{ fontSize: 17 }} />,
+      color: '#10b981',
+      bg: 'rgba(16, 185, 129, 0.08)',
+      border: 'rgba(16, 185, 129, 0.22)',
+      onClick: () => handleOpenActivityModal('walkinsCompleted', 'Walk-ins Completed', <CheckCircleOutline sx={{ fontSize: 20 }} />, '#10b981'),
+    },
+    {
+      metric: 'overdueFollowups',
+      label: 'Overdue Follow-ups',
+      value: daily.overdueFollowups ?? 0,
+      icon: <WarningAmber sx={{ fontSize: 17 }} />,
+      color: '#ef4444',
+      bg: 'rgba(239, 68, 68, 0.08)',
+      border: 'rgba(239, 68, 68, 0.22)',
+      onClick: () => handleOpenActivityModal('overdueFollowups', 'Overdue Follow-ups', <WarningAmber sx={{ fontSize: 20 }} />, '#ef4444'),
+    },
+    {
+      metric: 'won',
+      label: 'Won',
+      value: daily.won ?? 0,
+      icon: <CheckCircle sx={{ fontSize: 17 }} />,
+      color: '#16a34a',
+      bg: 'rgba(22, 163, 74, 0.08)',
+      border: 'rgba(22, 163, 74, 0.22)',
+      onClick: () => handleOpenActivityModal('won', 'Won', <CheckCircle sx={{ fontSize: 20 }} />, '#16a34a'),
+    },
+    {
+      metric: 'lost',
+      label: 'Lost',
+      value: daily.lost ?? 0,
+      icon: <Cancel sx={{ fontSize: 17 }} />,
+      color: '#dc2626',
+      bg: 'rgba(220, 38, 38, 0.08)',
+      border: 'rgba(220, 38, 38, 0.22)',
+      onClick: () => handleOpenActivityModal('lost', 'Lost', <Cancel sx={{ fontSize: 20 }} />, '#dc2626'),
+    },
+  ];
+
+
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3, flexWrap: 'wrap', gap: 2 }}>
         <Typography variant="h4" fontWeight={700} sx={{ color: 'text.primary' }}>
           Admin Dashboard
         </Typography>
-        <Chip label={new Date().toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })} color="primary" variant="outlined" />
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Button
+            id="admin-hospital-activities-btn"
+            variant="contained"
+            startIcon={<DirectionsWalk />}
+            onClick={() => handleOpenActivityModal('demos', 'Hospital Activities (Demos)', <OndemandVideo sx={{ fontSize: 20 }} />, '#8b5cf6')}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              fontWeight: 600,
+              boxShadow: 'none',
+              bgcolor: 'primary.main',
+              '&:hover': { bgcolor: 'primary.dark' }
+            }}
+          >
+            Hospital Activities
+          </Button>
+          <Button
+            variant="outlined"
+            startIcon={<FileDownload sx={{ color: '#0284c7' }} />}
+            onClick={() => setExportModalOpen(true)}
+            sx={{
+              borderRadius: 2,
+              textTransform: 'none',
+              borderColor: '#0284c7',
+              color: '#0284c7',
+              fontWeight: 600,
+              '&:hover': {
+                borderColor: '#0369a1',
+                bgcolor: 'rgba(2, 132, 199, 0.05)',
+              },
+            }}
+          >
+            Export Raw Dump
+          </Button>
+          <Chip label={new Date().toLocaleDateString('en-IN', { month: 'short', year: 'numeric' })} color="primary" variant="outlined" />
+        </Box>
+
       </Box>
+
+      {/* Export Raw Dump Modal */}
+      <ExportRawDumpModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        currentFilters={{
+          owner: filterAgentId,
+          startDate: buildDateParams().startDate,
+          endDate: buildDateParams().endDate,
+        }}
+        filterCount={[filterAgentId, dateFilter].filter(Boolean).length}
+      />
+
+      {/* Activity Details Modal */}
+      <DashboardActivityModal
+        open={activityModal.open}
+        onClose={() => {
+          setActivityModal((prev) => ({ ...prev, open: false }));
+          fetchDashboard();
+          fetchAgents();
+          fetchRecentLeads();
+        }}
+        metric={activityModal.metric}
+        metricLabel={activityModal.label}
+        icon={activityModal.icon}
+        color={activityModal.color}
+        dateParams={buildDateParams()}
+        dateFilter={dateFilter}
+        singleDate={singleDate}
+        selectedMonth={selectedMonth}
+        customStart={customStart}
+        customEnd={customEnd}
+        filterAgentId={filterAgentId}
+        selectedAgentName={selectedAgentName}
+        selectedDateLabel={selectedDateLabel}
+      />
+
 
       {/* Filter & Daily Activity Area */}
       <Paper elevation={0} sx={{ 
@@ -226,6 +472,34 @@ export default function AdminDashboard() {
               </Select>
             </FormControl>
           </Grid>
+          {dateFilter === 'single' && (
+            <Grid item xs={6} sm={4} md={2.5}>
+              <TextField
+                fullWidth
+                size="small"
+                type="date"
+                label="Select Date"
+                id="dashboard-single-date-picker"
+                value={singleDate}
+                onChange={(e) => setSingleDate(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+          )}
+          {dateFilter === 'month' && (
+            <Grid item xs={6} sm={4} md={2.5}>
+              <TextField
+                fullWidth
+                size="small"
+                type="month"
+                label="Select Month"
+                id="dashboard-month-picker"
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                InputLabelProps={{ shrink: true }}
+              />
+            </Grid>
+          )}
           {dateFilter === 'custom' && (
             <>
               <Grid item xs={6} sm={4} md={2}>
@@ -241,7 +515,7 @@ export default function AdminDashboard() {
               <Button 
                 variant="outlined" 
                 size="small" 
-                onClick={() => { setFilterAgentId(''); setDateFilter(''); setCustomStart(''); setCustomEnd(''); }} 
+                onClick={() => { setFilterAgentId(''); setDateFilter(''); setCustomStart(''); setCustomEnd(''); setSingleDate(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })); setSelectedMonth(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7)); }} 
                 fullWidth 
                 sx={{ borderRadius: 2, textTransform: 'none', py: 0.75, color: 'text.secondary', borderColor: 'divider' }}
               >
@@ -280,9 +554,12 @@ export default function AdminDashboard() {
         {/* 10 Metric Dynamic Activity Cards */}
         <Grid container spacing={1.2}>
           {dailyActivityItems.map((item, idx) => (
-            <Grid item xs={6} sm={4} md={2.4} key={idx}>
+            <Grid item xs={6} sm={4} md={2.4} key={item.metric || idx}>
               <Paper
                 elevation={0}
+                id={`activity-card-${item.metric || idx}`}
+                data-testid={`activity-card-${item.metric || idx}`}
+                onClick={item.onClick}
                 sx={{
                   p: 1.25,
                   borderRadius: 2,
@@ -292,11 +569,12 @@ export default function AdminDashboard() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
+                  cursor: item.onClick ? 'pointer' : 'default',
                   transition: 'all 0.2s ease-in-out',
                   '&:hover': {
-                    transform: 'translateY(-2px)',
-                    boxShadow: `0 4px 12px ${item.color}20`,
-                    borderColor: item.color,
+                    transform: item.onClick ? 'translateY(-2px)' : 'none',
+                    boxShadow: item.onClick ? `0 4px 12px ${item.color}20` : 'none',
+                    borderColor: item.onClick ? item.color : item.border,
                   }
                 }}
               >
@@ -457,7 +735,7 @@ export default function AdminDashboard() {
         bgcolor: 'background.paper'
       }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h6" fontWeight={700}>Active Leads (Latest 5)</Typography>
+          <Typography variant="h6" fontWeight={700}>Recent Hospitals / Leads (Latest 5)</Typography>
           <Button 
             size="small" 
             variant="contained" 

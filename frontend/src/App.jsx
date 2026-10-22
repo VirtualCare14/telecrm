@@ -35,6 +35,7 @@ export default function App() {
             <Route path="/admin/agents" element={<AppLayout><AdminAgents /></AppLayout>} />
             <Route path="/admin/roles" element={<AppLayout><AdminRoles /></AppLayout>} />
             <Route path="/admin/reports" element={<AppLayout><AdminReports /></AppLayout>} />
+            <Route path="/reports" element={<Navigate to="/admin/reports" replace />} />
           </Route>
 
           {/* Shared routes (Admin + Agent) */}

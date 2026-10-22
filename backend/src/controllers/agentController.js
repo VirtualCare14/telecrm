@@ -93,10 +93,7 @@ exports.getAgents = async (req, res, next) => {
 
     const enrichedAgents = await Promise.all(
       agents.map(async (agent) => {
-        const isCalling = (agent.agentRole || '').toLowerCase().includes('calling');
-        const agentMatch = isCalling
-          ? { $or: [{ currentOwner: agent._id }, { createdBy: agent._id }] }
-          : { currentOwner: agent._id };
+        const agentMatch = { $or: [{ currentOwner: agent._id }, { createdBy: agent._id }] };
 
         const leadFilter = Object.keys(dateMatch).length > 0
           ? { ...agentMatch, ...dateMatch }

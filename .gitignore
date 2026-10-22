@@ -10,4 +10,6 @@ frontend/dist/
 backend/backups/
 backend/scripts/
 scratch/
+uploads/
+backend/uploads/
 

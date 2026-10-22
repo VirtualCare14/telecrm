@@ -3,9 +3,10 @@ import {
   Box, Typography, TextField, Button, FormControl, InputLabel,
   Select, MenuItem, Pagination, Paper, Grid, Alert
 } from '@mui/material';
-import { Add, Search as SearchIcon, Clear, CloudUpload } from '@mui/icons-material';
+import { Add, Search as SearchIcon, Clear, CloudUpload, FileDownload } from '@mui/icons-material';
 import LeadTable from '../components/LeadTable';
 import ImportLeadsModal from '../components/ImportLeadsModal';
+import ExportRawDumpModal from '../components/ExportRawDumpModal';
 import { listLeads } from '../services/leadsService';
 import { getAgents } from '../services/agentService';
 import { useNavigate, useSearchParams, useLocation } from 'react-router-dom';
@@ -22,6 +23,7 @@ export default function Leads() {
   const [leads, setLeads] = useState([]);
   const [search, setSearch] = useState('');
   const [alertInfo, setAlertInfo] = useState(null);
+  const [error, setError] = useState(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [ownerFilter, setOwnerFilter] = useState(() => {
     const unassigned = searchParams.get('unassigned');
@@ -34,13 +36,16 @@ export default function Leads() {
   const [customEnd, setCustomEnd] = useState(() => searchParams.get('endDate') || '');
   const [closureFilter, setClosureFilter] = useState(() => searchParams.get('closureStatus') || '');
   const [followUpFilter, setFollowUpFilter] = useState(() => searchParams.get('followUpType') || '');
+  const [temperatureFilter, setTemperatureFilter] = useState(() => searchParams.get('temperature') || '');
   const [agents, setAgents] = useState([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [pageSize] = useState(20);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+
+  const isAdmin = user?.role === 'ADMIN' || (user?.agentRole && user.agentRole.toLowerCase() === 'admin');
 
   const buildParams = useCallback(() => {
     const params = { search, page, limit: pageSize };
@@ -53,6 +58,7 @@ export default function Leads() {
     }
     if (closureFilter) params.closureStatus = closureFilter;
     if (followUpFilter) params.followUpType = followUpFilter;
+    if (temperatureFilter) params.temperature = temperatureFilter;
     if (dateFilter) {
       if (dateFilter === 'custom') {
         if (customStart) params.startDate = customStart;
@@ -83,13 +89,16 @@ export default function Leads() {
     }
   }, [user]);
 
-  // Handle navigation alert (e.g. redirected after deleting a lead)
+  // Handle navigation alert or refresh (e.g. redirected after creating or deleting a lead)
   useEffect(() => {
-    if (location.state?.alert) {
-      setAlertInfo(location.state.alert);
+    if (location.state?.alert || location.state?.refresh) {
+      if (location.state.alert) {
+        setAlertInfo(location.state.alert);
+      }
+      setRefreshTrigger((prev) => prev + 1);
       window.history.replaceState({}, document.title);
     }
-  }, [location.state]);
+  }, [location.state, location.key]);
 
   const handleLeadDeleted = (deletedLead) => {
     setAlertInfo({
@@ -187,11 +196,12 @@ export default function Leads() {
     setCustomEnd('');
     setClosureFilter('');
     setFollowUpFilter('');
+    setTemperatureFilter('');
     setPage(1);
     navigate('/leads', { replace: true });
   };
 
-  const hasFilters = search || ownerFilter || dateFilter || closureFilter || followUpFilter;
+  const hasFilters = search || ownerFilter || dateFilter || closureFilter || followUpFilter || temperatureFilter;
 
   return (
     <Box>
@@ -200,6 +210,27 @@ export default function Leads() {
           Leads
         </Typography>
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+          {isAdmin && (
+            <Button
+              variant="outlined"
+              startIcon={<FileDownload sx={{ color: '#0284c7' }} />}
+              onClick={() => setExportModalOpen(true)}
+              sx={{ 
+                borderRadius: 2, 
+                textTransform: 'none',
+                borderColor: '#0284c7',
+                color: '#0284c7',
+                fontWeight: 600,
+                '&:hover': {
+                  borderColor: '#0369a1',
+                  bgcolor: 'rgba(2, 132, 199, 0.05)'
+                }
+              }}
+            >
+              Export Raw Dump
+            </Button>
+          )}
+
           <Button
             variant="outlined"
             startIcon={<CloudUpload sx={{ color: '#107c41' }} />}
@@ -246,6 +277,23 @@ export default function Leads() {
           setRefreshTrigger((prev) => prev + 1);
         }}
       />
+
+      {/* Export Raw Dump Modal */}
+      <ExportRawDumpModal
+        open={exportModalOpen}
+        onClose={() => setExportModalOpen(false)}
+        currentFilters={{
+          search,
+          owner: ownerFilter === 'unassigned' ? undefined : ownerFilter,
+          unassigned: ownerFilter === 'unassigned' ? 'true' : undefined,
+          closureStatus: closureFilter,
+          followUpType: followUpFilter,
+          startDate: dateFilter === 'custom' ? customStart : (getDateRangeFromFilter(dateFilter)?.startDate),
+          endDate: dateFilter === 'custom' ? customEnd : (getDateRangeFromFilter(dateFilter)?.endDate),
+        }}
+        filterCount={[search, ownerFilter, closureFilter, followUpFilter, dateFilter].filter(Boolean).length}
+      />
+
 
       {/* Filters - auto apply on change */}
       <Paper elevation={0} sx={{ 
@@ -313,6 +361,17 @@ export default function Leads() {
                 <MenuItem value="OPEN">Open</MenuItem>
                 <MenuItem value="WON">Won</MenuItem>
                 <MenuItem value="LOST">Lost</MenuItem>
+              </Select>
+            </FormControl>
+          </Grid>
+          <Grid item xs={6} md={user?.role === 'ADMIN' ? 1.5 : 2}>
+            <FormControl fullWidth size="small">
+              <InputLabel>Temperature</InputLabel>
+              <Select value={temperatureFilter} label="Temperature" onChange={(e) => { setTemperatureFilter(e.target.value); setPage(1); }} sx={{ borderRadius: 2 }}>
+                <MenuItem value="">All Temperatures</MenuItem>
+                <MenuItem value="Hot">🔥 Hot</MenuItem>
+                <MenuItem value="Warm">⚡ Warm</MenuItem>
+                <MenuItem value="Cold">❄️ Cold</MenuItem>
               </Select>
             </FormControl>
           </Grid>

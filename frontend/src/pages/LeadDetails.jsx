@@ -3,7 +3,7 @@ import {
   Box, Typography, Paper, TextField, Button, Grid, Alert, Divider,
   FormControl, InputLabel, Select, MenuItem, Chip, Tabs, Tab,
   Dialog, DialogTitle, DialogContent, DialogActions, IconButton,
-  CircularProgress, Avatar, Tooltip, Autocomplete, Menu, ListItemIcon, ListItemText, Stack
+  CircularProgress, Avatar, Tooltip, Autocomplete, Menu, ListItemIcon, ListItemText, Stack, Link
 } from '@mui/material';
 import {
   ArrowBack, Phone, Edit, Close, CheckCircle, Cancel, Send,
@@ -31,6 +31,11 @@ import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { formatDateTime, formatDate, formatDateToYYYYMMDD, toLocalDatetimeInput, toISOFromLocalDatetime } from '../utils/dateHelpers';
 import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl } from '../utils/whatsappHelper';
 import { CALL_DISPOSITIONS, LOST_REASONS, LEAD_SOURCES, INDUSTRIES, ORGANIZATION_TYPES, SOFTWARE_OPTIONS } from '../utils/constants';
+import { classifyLead } from '../utils/leadScoring';
+import { captureCurrentLocation, getDeviceInstallationId } from '../utils/deviceLocationHelper';
+import VisitLocationCaptureBox from '../components/VisitLocationCaptureBox';
+import { calculateHaversineDistance } from '../utils/geoUtils';
+import { MyLocation, OpenInNew, Devices, GpsFixed, LocationOff, PhotoCamera } from '@mui/icons-material';
 
 // Helper for disposition color badge
 const getDispositionStyle = (disposition) => {
@@ -120,6 +125,17 @@ export default function LeadDetails() {
   const [editingWalkInId, setEditingWalkInId] = useState(null);
   const [walkInError, setWalkInError] = useState(null);
   const [savingWalkIn, setSavingWalkIn] = useState(false);
+  const [walkInLocation, setWalkInLocation] = useState({
+    status: 'Unavailable',
+    latitude: null,
+    longitude: null,
+    accuracy: null,
+    capturedAt: null,
+    error: null,
+    googleMapsUrl: null,
+  });
+  const [walkInDeviceId, setWalkInDeviceId] = useState('');
+  const [acquiringLocation, setAcquiringLocation] = useState(false);
 
   // Demo Modal State (for Sales Agent & Admin - Requirements 1, 2, 3, 7)
   const [demoOpen, setDemoOpen] = useState(false);
@@ -241,7 +257,14 @@ export default function LeadDetails() {
   const ownerId = (lead?.currentOwner?._id || lead?.currentOwner)?._id || (lead?.currentOwner?._id || lead?.currentOwner);
   const currentUserId = user?.id || user?._id;
   const isOwnerOrAdmin = isAdmin || (ownerId && currentUserId && ownerId.toString() === currentUserId.toString());
-  const canEdit = isOwnerOrAdmin && lead?.closureStatus === 'OPEN';
+  const creatorId = (lead?.createdBy?._id || lead?.createdBy)?._id || (lead?.createdBy?._id || lead?.createdBy);
+  const isCreator = creatorId && currentUserId && creatorId.toString() === currentUserId.toString();
+  const assignedSalesId = (lead?.latestDemo?.salesAgent?._id || lead?.latestDemo?.salesAgent)?.toString() || 
+                          (lead?.latestWalkIn?.salesAgent?._id || lead?.latestWalkIn?.salesAgent)?.toString() || 
+                          (lead?.latestSalesFollowUp?.salesAgent?._id || lead?.latestSalesFollowUp?.salesAgent)?.toString();
+  const isAssignedSalesAgent = assignedSalesId && currentUserId && assignedSalesId === currentUserId.toString();
+  const isAuthorized = isOwnerOrAdmin || isCreator || isAssignedSalesAgent;
+  const canEdit = isAuthorized && lead?.closureStatus === 'OPEN';
   const isSalesAgent = user?.agentRole?.toLowerCase() === 'sales agent';
   const isCallingAgent = !isAdmin && !isSalesAgent;
 
@@ -273,6 +296,36 @@ export default function LeadDetails() {
     refresh().finally(() => setLoading(false));
   }, [id]);
 
+  // Automatic cross-agent synchronization: 30s background polling & window focus refresh
+  useEffect(() => {
+    const handleSync = () => {
+      refresh();
+    };
+
+    const handleFocus = () => {
+      handleSync();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        handleSync();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    const intervalId = setInterval(() => {
+      handleSync();
+    }, 30000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      clearInterval(intervalId);
+    };
+  }, [id]);
+
   const resetEditFields = (targetLead = lead) => {
     if (!targetLead) return;
     const isKnown = LEAD_SOURCES.filter((s) => s !== 'Other').includes(targetLead.leadSource);
@@ -287,6 +340,8 @@ export default function LeadDetails() {
       customLeadSource: isKnown ? '' : (targetLead.leadSource || ''),
       existingSoftwareUsed: targetLead.existingSoftwareUsed || '',
       softwareName: targetLead.softwareName || '',
+      hospitalLatitude: targetLead.hospitalCoordinates?.latitude != null ? targetLead.hospitalCoordinates.latitude : '',
+      hospitalLongitude: targetLead.hospitalCoordinates?.longitude != null ? targetLead.hospitalCoordinates.longitude : '',
     });
   };
 
@@ -360,6 +415,17 @@ export default function LeadDetails() {
     setTimeout(() => setCopiedPhone(null), 2000);
   };
 
+  // Copy created device ID helper
+  const [copiedCreatedDevId, setCopiedCreatedDevId] = useState(false);
+  const handleCopyCreatedDevId = (id) => {
+    if (!id) return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(id);
+      setCopiedCreatedDevId(true);
+      setTimeout(() => setCopiedCreatedDevId(false), 2000);
+    }
+  };
+
   // Lead Edit Handlers
   const handleEditField = (f) => (e) => setEditFields((p) => ({ ...p, [f]: e.target.value }));
   const handleSaveEdit = async () => {
@@ -390,6 +456,14 @@ export default function LeadDetails() {
       };
       delete payload.leadSourceDropdown;
       delete payload.customLeadSource;
+
+      if (editFields.hospitalLatitude !== undefined && editFields.hospitalLongitude !== undefined) {
+        payload.hospitalCoordinates = {
+          latitude: editFields.hospitalLatitude !== '' ? Number(editFields.hospitalLatitude) : null,
+          longitude: editFields.hospitalLongitude !== '' ? Number(editFields.hospitalLongitude) : null,
+          isVerified: editFields.hospitalLatitude !== '' && editFields.hospitalLongitude !== '',
+        };
+      }
 
       await updateLead(id, payload);
       setEditMode(false);
@@ -457,6 +531,28 @@ export default function LeadDetails() {
   };
 
   // Walk-in Handlers
+  const triggerWalkInLocationCapture = async () => {
+    setAcquiringLocation(true);
+    const { deviceInstallationId } = getDeviceInstallationId();
+    setWalkInDeviceId(deviceInstallationId);
+    try {
+      const loc = await captureCurrentLocation();
+      setWalkInLocation(loc);
+    } catch (e) {
+      setWalkInLocation({
+        status: 'Unavailable',
+        latitude: null,
+        longitude: null,
+        accuracy: null,
+        capturedAt: null,
+        error: 'Unable to determine location.',
+        googleMapsUrl: null,
+      });
+    } finally {
+      setAcquiringLocation(false);
+    }
+  };
+
   const handleOpenWalkIn = (walkInToEdit = null) => {
     setWalkInError(null);
     if (walkInToEdit && walkInToEdit._id) {
@@ -468,6 +564,20 @@ export default function LeadDetails() {
         status: walkInToEdit.status || 'Planned',
         remark: walkInToEdit.remark || '',
       });
+      if (walkInToEdit.latitude != null && walkInToEdit.longitude != null) {
+        setWalkInLocation({
+          status: walkInToEdit.locationStatus || 'Captured',
+          latitude: walkInToEdit.latitude,
+          longitude: walkInToEdit.longitude,
+          accuracy: walkInToEdit.accuracy,
+          capturedAt: walkInToEdit.locationCapturedAt,
+          error: null,
+          googleMapsUrl: `https://www.google.com/maps?q=${walkInToEdit.latitude},${walkInToEdit.longitude}`,
+        });
+        setWalkInDeviceId(walkInToEdit.deviceInstallationId || getDeviceInstallationId().deviceInstallationId);
+      } else {
+        triggerWalkInLocationCapture();
+      }
     } else {
       setEditingWalkInId(null);
       const defaultAgent = availableSalesAgents[0]?._id || (isSalesAgent ? (user?.id || user?._id) : '');
@@ -481,6 +591,7 @@ export default function LeadDetails() {
         status: 'Planned',
         remark: '',
       });
+      triggerWalkInLocationCapture();
     }
     setWalkInOpen(true);
   };
@@ -509,15 +620,26 @@ export default function LeadDetails() {
       setWalkInError('Walk-in remark is required');
       return;
     }
+
     setSavingWalkIn(true);
     setWalkInError(null);
     try {
+      const locationPayload = {
+        latitude: walkInLocation.latitude,
+        longitude: walkInLocation.longitude,
+        accuracy: walkInLocation.accuracy,
+        locationCapturedAt: walkInLocation.capturedAt,
+        locationStatus: walkInLocation.status,
+        deviceInstallationId: walkInDeviceId,
+      };
+
       if (editingWalkInId) {
         await updateWalkInStatus(id, editingWalkInId, {
           status: walkInData.status,
           remark: walkInData.remark.trim(),
           walkInDate: walkInData.walkInDate,
           walkInTime: walkInData.walkInTime,
+          ...locationPayload,
         });
       } else {
         await createWalkIn(id, {
@@ -526,6 +648,7 @@ export default function LeadDetails() {
           walkInTime: walkInData.walkInTime,
           status: walkInData.status || 'Planned',
           remark: walkInData.remark.trim(),
+          ...locationPayload,
         });
       }
       setWalkInOpen(false);
@@ -1392,6 +1515,7 @@ export default function LeadDetails() {
   const ownerName = lead.currentOwner?.fullName || lead.currentOwner?.username || 'Unassigned';
   const primaryContact = lead.primaryContact || contacts.find((c) => c.isPrimary) || contacts[0];
   const dispStyle = getDispositionStyle(lead.latestDisposition);
+  const classification = lead.classification || classifyLead(lead);
 
   return (
     <Box sx={{ pb: 6 }}>
@@ -1462,6 +1586,22 @@ export default function LeadDetails() {
                 borderColor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : lead.closureStatus === 'LOST' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(234, 88, 12, 0.3)',
               }}
             />
+
+            {/* Dynamic Temperature Chip for OPEN leads */}
+            {!isClosed && classification.badge && (
+              <Chip
+                label={`${classification.badge.label === 'Hot' ? '🔥' : classification.badge.label === 'Warm' ? '⚡' : '❄️'} ${classification.badge.label} (${classification.score}/100)`}
+                size="small"
+                sx={{
+                  fontWeight: 700,
+                  fontSize: 11,
+                  borderRadius: 1.5,
+                  bgcolor: classification.badge.bg,
+                  color: classification.badge.color,
+                  border: `1px solid ${classification.badge.border}`,
+                }}
+              />
+            )}
 
             {/* Overdue Alert Chip */}
             {isOverdue && (
@@ -2023,6 +2163,112 @@ export default function LeadDetails() {
         )}
       </Grid>
 
+      {/* Lead Qualification & Temperature Scorecard */}
+      <Paper
+        elevation={0}
+        sx={{
+          p: { xs: 2, sm: 2.5 },
+          mb: 3,
+          borderRadius: 3,
+          border: '1px solid',
+          borderColor: isClosed
+            ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)')
+            : (classification.badge?.border || 'divider'),
+          bgcolor: isClosed
+            ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.03)' : 'rgba(239, 68, 68, 0.03)')
+            : (classification.badge?.bg ? `${classification.badge.bg.replace('0.12', '0.04')}` : 'background.paper'),
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2, mb: 1.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 44,
+                height: 44,
+                borderRadius: 2,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 22,
+                bgcolor: isClosed
+                  ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
+                  : classification.badge?.bg,
+                border: '1px solid',
+                borderColor: isClosed
+                  ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)')
+                  : classification.badge?.border,
+              }}
+            >
+              {isClosed ? (lead.closureStatus === 'WON' ? '🏆' : '🛑') : (classification.badge?.label === 'Hot' ? '🔥' : classification.badge?.label === 'Warm' ? '⚡' : '❄️')}
+            </Box>
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
+                  Lead Qualification Scorecard
+                </Typography>
+                <Chip
+                  label={isClosed ? (lead.closureStatus === 'WON' ? 'Closed Won' : 'Closed Lost') : classification.badge?.label}
+                  size="small"
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: 11,
+                    height: 22,
+                    bgcolor: isClosed
+                      ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
+                      : classification.badge?.bg,
+                    color: isClosed
+                      ? (lead.closureStatus === 'WON' ? '#059669' : '#dc2626')
+                      : classification.badge?.color,
+                    border: `1px solid ${isClosed ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)') : classification.badge?.border}`,
+                  }}
+                />
+              </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                {isClosed ? (lead.closureStatus === 'WON' ? 'Deal successfully closed and marked Won • Revenue achieved' : 'Lead closed and marked Lost • Terminal state strictly preserved') : classification.indicator}
+              </Typography>
+            </Box>
+          </Box>
+          {!isClosed && classification.score !== null && (
+            <Box sx={{ textAlign: { xs: 'left', sm: 'right' } }}>
+              <Typography variant="h5" fontWeight={800} sx={{ color: classification.badge?.color, lineHeight: 1 }}>
+                {classification.score}<span style={{ fontSize: 14, fontWeight: 600, color: '#64748b' }}>/100</span>
+              </Typography>
+              <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mt: 0.5 }}>
+                Rule-Based Lead Score
+              </Typography>
+            </Box>
+          )}
+        </Box>
+
+        <Divider sx={{ my: 1.5, borderColor: 'divider' }} />
+
+        <Box>
+          <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 1 }}>
+            Classification & Scoring Rationale
+          </Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+            {classification.reasons.map((r, idx) => (
+              <Chip
+                key={idx}
+                label={r}
+                size="small"
+                variant="outlined"
+                sx={{
+                  fontSize: 12,
+                  py: 0.5,
+                  height: 'auto',
+                  borderRadius: 1.5,
+                  bgcolor: 'background.paper',
+                  borderColor: isClosed ? 'divider' : (r.startsWith('+') ? 'rgba(16, 185, 129, 0.4)' : r.startsWith('-') ? 'rgba(239, 68, 68, 0.4)' : 'divider'),
+                  color: r.startsWith('+') ? '#059669' : r.startsWith('-') ? '#dc2626' : 'text.primary',
+                  '& .MuiChip-label': { whiteSpace: 'normal', py: 0.5 }
+                }}
+              />
+            ))}
+          </Box>
+        </Box>
+      </Paper>
+
       {/* Main Content Grid: Detailed Sections */}
       <Grid container spacing={3}>
         {/* LEFT COLUMN: Section 1 (Lead Info) & Section 2 (Contact Info) */}
@@ -2275,6 +2521,46 @@ export default function LeadDetails() {
                 ) : (
                   <Typography variant="body2" sx={{ color: 'text.secondary', lineHeight: 1.5 }}>
                     {lead.address || '—'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Verified Hospital Latitude
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="e.g. 12.971598"
+                    value={editFields.hospitalLatitude}
+                    onChange={handleEditField('hospitalLatitude')}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                    {lead.hospitalCoordinates?.latitude != null ? lead.hospitalCoordinates.latitude.toFixed(6) : 'Not recorded'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Verified Hospital Longitude
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="e.g. 77.594562"
+                    value={editFields.hospitalLongitude}
+                    onChange={handleEditField('hospitalLongitude')}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                    {lead.hospitalCoordinates?.longitude != null ? lead.hospitalCoordinates.longitude.toFixed(6) : 'Not recorded'}
                   </Typography>
                 )}
               </Grid>
@@ -2687,7 +2973,324 @@ export default function LeadDetails() {
                   {formatDateTime(lead.updatedAt)}
                 </Typography>
               </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Last Updated By
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary', fontWeight: 600 }}>
+                  {lead.updatedBy?.fullName || lead.updatedBy?.username || lead.updatedByName || lead.createdBy?.fullName || lead.createdBy?.username || '—'}
+                </Typography>
+              </Box>
             </Box>
+          </Paper>
+
+          {/* Section: Lead Created Location & Device */}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'rgba(37, 99, 235, 0.1)',
+                    color: '#2563eb',
+                  }}
+                >
+                  <MyLocation sx={{ fontSize: 18 }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
+                  Lead Created Location & Device
+                </Typography>
+              </Box>
+
+              <Chip
+                size="small"
+                label={lead.createdLocation?.status || 'Not recorded'}
+                sx={{
+                  fontWeight: 700,
+                  fontSize: 11,
+                  borderRadius: 1.5,
+                  bgcolor:
+                    lead.createdLocation?.status === 'Captured'
+                      ? 'rgba(16, 185, 129, 0.12)'
+                      : lead.createdLocation?.status === 'Permission Denied'
+                      ? 'rgba(245, 158, 11, 0.12)'
+                      : 'rgba(148, 163, 184, 0.15)',
+                  color:
+                    lead.createdLocation?.status === 'Captured'
+                      ? '#059669'
+                      : lead.createdLocation?.status === 'Permission Denied'
+                      ? '#d97706'
+                      : '#64748b',
+                  border: '1px solid',
+                  borderColor:
+                    lead.createdLocation?.status === 'Captured'
+                      ? 'rgba(16, 185, 129, 0.3)'
+                      : lead.createdLocation?.status === 'Permission Denied'
+                      ? 'rgba(245, 158, 11, 0.3)'
+                      : 'rgba(148, 163, 184, 0.3)',
+                }}
+              />
+            </Box>
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.75 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Creator (Agent)
+                </Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
+                  {lead.createdBy?.fullName || lead.createdBy?.username || lead.createdByName || 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Verified Hospital Coordinates
+                </Typography>
+                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
+                  {lead.hospitalCoordinates?.latitude != null && lead.hospitalCoordinates?.longitude != null
+                    ? `${lead.hospitalCoordinates.latitude.toFixed(6)}, ${lead.hospitalCoordinates.longitude.toFixed(6)}`
+                    : 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Geofence Result & Distance
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Chip
+                    size="small"
+                    label={lead.createdLocation?.geofenceStatus || 'Not Verified'}
+                    sx={{
+                      height: 20,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      bgcolor: lead.createdLocation?.geofenceStatus === 'Passed' ? 'rgba(16, 185, 129, 0.12)' : (lead.createdLocation?.geofenceStatus === 'Failed' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)'),
+                      color: lead.createdLocation?.geofenceStatus === 'Passed' ? '#059669' : (lead.createdLocation?.geofenceStatus === 'Failed' ? '#dc2626' : '#2563eb'),
+                    }}
+                  />
+                  {lead.createdLocation?.distanceMetres != null && (
+                    <Typography variant="caption" fontWeight={600} color="text.secondary">
+                      ({Math.round(lead.createdLocation.distanceMetres)}m from hospital)
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Creation Timestamp
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                  {lead.createdLocation?.capturedAt
+                    ? formatDateTime(lead.createdLocation.capturedAt)
+                    : lead.createdAt
+                    ? formatDateTime(lead.createdAt)
+                    : 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Location Status
+                </Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
+                  {lead.createdLocation?.status || 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  GPS Coordinates
+                </Typography>
+                {lead.createdLocation?.latitude !== null && lead.createdLocation?.latitude !== undefined &&
+                 lead.createdLocation?.longitude !== null && lead.createdLocation?.longitude !== undefined ? (
+                  <Box sx={{ textAlign: 'right' }}>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
+                      {lead.createdLocation.latitude.toFixed(6)}, {lead.createdLocation.longitude.toFixed(6)}
+                    </Typography>
+                    {lead.createdLocation.accuracy !== null && lead.createdLocation.accuracy !== undefined && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                        Accuracy: ±{lead.createdLocation.accuracy}m
+                      </Typography>
+                    )}
+                    <Link
+                      href={`https://www.google.com/maps?q=${lead.createdLocation.latitude},${lead.createdLocation.longitude}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      sx={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 0.5,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: '#2563eb',
+                        mt: 0.5,
+                        textDecoration: 'none',
+                        '&:hover': { textDecoration: 'underline' },
+                      }}
+                    >
+                      Open in Maps <OpenInNew sx={{ fontSize: 12 }} />
+                    </Link>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Not recorded
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Device Name */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Device Name
+                </Typography>
+                {lead.createdDeviceName ? (
+                  <Chip
+                    size="small"
+                    label={lead.createdDeviceName}
+                    sx={{
+                      height: 22,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      bgcolor: '#f1f5f9',
+                      color: '#334155',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: 1.5,
+                    }}
+                  />
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Not recorded
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Device Installation ID */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5, flexWrap: 'wrap', gap: 1 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Device Installation ID
+                </Typography>
+                {lead.createdDeviceInstallationId ? (
+                  <Box
+                    sx={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      bgcolor: '#f1f5f9',
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: 1.5,
+                      border: '1px solid #cbd5e1',
+                      maxWidth: '100%',
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        fontFamily: 'monospace',
+                        fontWeight: 600,
+                        color: '#475569',
+                        fontSize: 11,
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {String(lead.createdDeviceInstallationId)}
+                    </Typography>
+                    <Tooltip title={copiedCreatedDevId ? 'Copied ID!' : 'Copy Device ID'}>
+                      <IconButton
+                        size="small"
+                        onClick={() => handleCopyCreatedDevId(String(lead.createdDeviceInstallationId))}
+                        sx={{
+                          p: 0.25,
+                          color: copiedCreatedDevId ? '#059669' : '#64748b',
+                          '&:hover': { bgcolor: 'rgba(0,0,0,0.05)' },
+                        }}
+                      >
+                        {copiedCreatedDevId ? <CheckIcon sx={{ fontSize: 13, color: '#059669' }} /> : <ContentCopy sx={{ fontSize: 13 }} />}
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Not recorded
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Visit Live Camera Photo */}
+              {lead.visitPhoto?.url && (
+                <Box sx={{ mt: 2, p: 2, bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                    <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <PhotoCamera sx={{ fontSize: 16, color: '#059669' }} /> Live Visit Camera Photo
+                    </Typography>
+                    <Chip
+                      size="small"
+                      label="Live Captured"
+                      sx={{
+                        height: 20,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        bgcolor: 'rgba(16, 185, 129, 0.12)',
+                        color: '#059669',
+                      }}
+                    />
+                  </Box>
+                  <Box
+                    component="img"
+                    src={lead.visitPhoto.url}
+                    alt="Lead visit verification"
+                    sx={{
+                      width: '100%',
+                      maxHeight: 240,
+                      objectFit: 'cover',
+                      borderRadius: 1.5,
+                      border: '1px solid #cbd5e1',
+                      cursor: 'pointer',
+                      bgcolor: '#000',
+                    }}
+                    onClick={() => window.open(lead.visitPhoto.url, '_blank')}
+                  />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 1, flexWrap: 'wrap', gap: 1 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
+                      Captured: {lead.visitPhoto.capturedAt ? formatDateTime(lead.visitPhoto.capturedAt) : 'At lead creation'}
+                      {lead.visitPhoto.capturedByName ? ` by ${lead.visitPhoto.capturedByName}` : ''}
+                    </Typography>
+                    <Link
+                      href={lead.visitPhoto.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      sx={{ fontSize: 11, fontWeight: 600, color: '#2563eb', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 0.5 }}
+                    >
+                      View Full Size <OpenInNew sx={{ fontSize: 11 }} />
+                    </Link>
+                  </Box>
+                </Box>
+              )}
+            </Box>
+
+            <Divider sx={{ my: 2 }} />
+
+            <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: 11, fontStyle: 'italic', display: 'block' }}>
+              * Initial GPS location and browser device installation ID captured at lead creation time. Kept separate from the registered hospital address and subsequent field visit records.
+            </Typography>
           </Paper>
 
           {/* Section 4: Current Status & Latest Disposition */}
@@ -3787,6 +4390,168 @@ export default function LeadDetails() {
                             <Typography variant="body2" sx={{ color: '#334155', whiteSpace: 'pre-line' }}>
                               {w.remark}
                             </Typography>
+                          </Paper>
+
+                          {/* Visit Location & Device Verification Details (Requirement 5) */}
+                          <Paper
+                            elevation={0}
+                            sx={{
+                              mt: 1.5,
+                              p: 1.5,
+                              borderRadius: 2,
+                              bgcolor: '#f8fafc',
+                              border: '1px solid #e2e8f0',
+                            }}
+                          >
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1 }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                <MyLocation sx={{ fontSize: 16, color: w.latitude != null ? '#059669' : '#64748b' }} />
+                                <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a', textTransform: 'uppercase' }}>
+                                  Visit GPS Location & Device
+                                </Typography>
+                              </Box>
+                              <Chip
+                                size="small"
+                                icon={w.latitude != null ? <LocationOn sx={{ fontSize: '13px !important' }} /> : <LocationOff sx={{ fontSize: '13px !important' }} />}
+                                label={w.locationStatus || (w.latitude != null ? 'Captured' : 'Not recorded')}
+                                sx={{
+                                  fontWeight: 700,
+                                  fontSize: 10,
+                                  height: 20,
+                                  bgcolor: w.latitude != null ? 'rgba(16, 185, 129, 0.12)' : (w.locationStatus === 'Permission Denied' ? 'rgba(245, 158, 11, 0.12)' : '#f1f5f9'),
+                                  color: w.latitude != null ? '#059669' : (w.locationStatus === 'Permission Denied' ? '#d97706' : '#64748b'),
+                                  border: '1px solid',
+                                  borderColor: w.latitude != null ? 'rgba(16, 185, 129, 0.3)' : (w.locationStatus === 'Permission Denied' ? 'rgba(245, 158, 11, 0.3)' : '#cbd5e1'),
+                                }}
+                              />
+                            </Box>
+
+                            <Grid container spacing={1.5}>
+                              <Grid item xs={12} sm={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Agent (Sales On-Site Action):
+                                </Typography>
+                                <Typography variant="body2" fontWeight={600} sx={{ color: '#0f172a' }}>
+                                  {w.salesAgent?.fullName || w.salesAgent?.username || 'Sales Agent'} ({w.salesAgent?.agentRole || 'Sales Agent'})
+                                </Typography>
+                              </Grid>
+
+                              <Grid item xs={12} sm={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Hospital Name:
+                                </Typography>
+                                <Typography variant="body2" fontWeight={600} sx={{ color: '#0f172a' }}>
+                                  {lead?.organizationName || 'N/A'}
+                                </Typography>
+                              </Grid>
+
+                              <Grid item xs={12} sm={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Captured GPS Coordinates:
+                                </Typography>
+                                {w.latitude != null && w.longitude != null ? (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: '#334155' }}>
+                                      {w.latitude.toFixed(6)}, {w.longitude.toFixed(6)}
+                                    </Typography>
+                                    <Button
+                                      size="small"
+                                      variant="text"
+                                      component="a"
+                                      href={`https://www.google.com/maps?q=${w.latitude},${w.longitude}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      startIcon={<OpenInNew sx={{ fontSize: 13 }} />}
+                                      sx={{ minWidth: 'auto', p: 0.25, fontSize: 11, textTransform: 'none', color: '#2563eb' }}
+                                    >
+                                      Map
+                                    </Button>
+                                  </Box>
+                                ) : (
+                                  <Typography variant="body2" sx={{ color: '#94a3b8', fontStyle: 'italic' }}>
+                                    Not recorded
+                                  </Typography>
+                                )}
+                              </Grid>
+
+                              <Grid item xs={12} sm={3}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  GPS Accuracy:
+                                </Typography>
+                                <Typography variant="body2" fontWeight={600} sx={{ color: w.accuracy != null ? (w.accuracy <= 90 ? '#059669' : '#dc2626') : '#94a3b8' }}>
+                                  {w.accuracy != null ? `±${w.accuracy}m ${w.accuracy <= 90 ? '(Pass)' : '(Exceeded)'}` : 'Not recorded'}
+                                </Typography>
+                              </Grid>
+
+                              <Grid item xs={12} sm={3}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Geofence Result:
+                                </Typography>
+                                <Chip
+                                  size="small"
+                                  label={w.geofenceStatus || (w.latitude != null ? 'Passed' : 'Not recorded')}
+                                  sx={{
+                                    height: 20,
+                                    fontSize: 10,
+                                    fontWeight: 700,
+                                    bgcolor: w.geofenceStatus === 'Passed' ? 'rgba(16, 185, 129, 0.12)' : (w.geofenceStatus === 'Failed' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)'),
+                                    color: w.geofenceStatus === 'Passed' ? '#059669' : (w.geofenceStatus === 'Failed' ? '#dc2626' : '#2563eb'),
+                                  }}
+                                />
+                              </Grid>
+
+                              <Grid item xs={12} sm={6}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Hospital Coordinates Used:
+                                </Typography>
+                                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: '#334155' }}>
+                                  {(w.hospitalLatitude != null && w.hospitalLongitude != null)
+                                    ? `${w.hospitalLatitude.toFixed(6)}, ${w.hospitalLongitude.toFixed(6)}`
+                                    : (lead?.hospitalCoordinates?.latitude != null
+                                      ? `${lead.hospitalCoordinates.latitude.toFixed(6)}, ${lead.hospitalCoordinates.longitude.toFixed(6)}`
+                                      : 'Not recorded')}
+                                </Typography>
+                              </Grid>
+
+                              <Grid item xs={12} sm={3}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Calculated Distance:
+                                </Typography>
+                                <Typography variant="body2" fontWeight={600} sx={{ color: w.distanceMetres != null ? (w.distanceMetres <= 150 ? '#059669' : '#dc2626') : '#64748b' }}>
+                                  {w.distanceMetres != null ? `${Math.round(w.distanceMetres)}m (Allowed <=150m)` : 'N/A'}
+                                </Typography>
+                              </Grid>
+
+                              <Grid item xs={12} sm={3}>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                                  Device ID:
+                                </Typography>
+                                <Tooltip title={typeof w.deviceInstallationId === 'string' ? w.deviceInstallationId : 'Not recorded'}>
+                                  <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: w.deviceInstallationId ? '#475569' : '#94a3b8' }}>
+                                    {typeof w.deviceInstallationId === 'string' && w.deviceInstallationId
+                                      ? `${w.deviceInstallationId.substring(0, 10)}...`
+                                      : (w.deviceInstallationId ? String(w.deviceInstallationId) : 'Not recorded')}
+                                  </Typography>
+                                </Tooltip>
+                              </Grid>
+
+                              <Grid item xs={12}>
+                                <Divider sx={{ my: 0.5, borderStyle: 'dashed' }} />
+                                <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1 }}>
+                                  <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 0.5 }}>
+                                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600, fontSize: 11, whiteSpace: 'nowrap' }}>
+                                      Registered Hospital Address:
+                                    </Typography>
+                                    <Typography variant="caption" sx={{ color: '#475569', fontSize: 11 }}>
+                                      {lead?.address || 'Not recorded in CRM'}
+                                    </Typography>
+                                  </Box>
+                                  <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: 10 }}>
+                                    Recorded: {formatDateTime(w.createdAt || w.recordedAt)}
+                                  </Typography>
+                                </Box>
+                              </Grid>
+                            </Grid>
                           </Paper>
                         </Paper>
                       ))}
@@ -5072,6 +5837,19 @@ export default function LeadDetails() {
         </DialogTitle>
         <DialogContent sx={{ pt: 2.5 }}>
           {walkInError && <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }}>{walkInError}</Alert>}
+          
+          {/* Location & Device Verification (Requirement 2 & 3) */}
+          <Box sx={{ mb: 2 }}>
+            <VisitLocationCaptureBox
+              locationData={walkInLocation}
+              deviceId={walkInDeviceId}
+              hospitalCoordinates={lead?.hospitalCoordinates}
+              isSalesAgent={isSalesAgent}
+              loading={acquiringLocation}
+              onRetry={triggerWalkInLocationCapture}
+            />
+          </Box>
+
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12}>
               <FormControl fullWidth size="small" required>

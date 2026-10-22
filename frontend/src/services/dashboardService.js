@@ -27,3 +27,31 @@ export async function downloadDailyActivityExport(params, format = 'xlsx') {
   });
   return res;
 }
+
+export async function getActivityHospitals(params) {
+  const res = await api.get('/dashboard/activity-hospitals', { params });
+  return res.data;
+}
+
+export async function downloadActivityHospitalsExport(params, format = 'xlsx') {
+  const res = await api.get('/dashboard/activity-hospitals/export', {
+    params: { ...params, format },
+    responseType: 'blob',
+  });
+  return res;
+}
+
+export async function getDashboardMetricRecords(params) {
+  const res = await api.get('/dashboard/metric-records', { params });
+  return res.data;
+}
+
+export async function downloadDashboardMetricRecordsExport(params, format = 'xlsx') {
+  const res = await api.get('/dashboard/metric-records/export', {
+    params: { ...params, format },
+    responseType: 'blob',
+  });
+  return res;
+}
+
+

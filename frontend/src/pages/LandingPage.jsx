@@ -133,7 +133,7 @@ export default function LandingPage() {
       {/* Footer */}
       <Box sx={{ bgcolor: 'grey.100', py: 4, textAlign: 'center', borderTop: '1px solid', borderColor: 'divider' }}>
         <Typography variant="body2" color="text.secondary">
-          © 2024 TeleCRM. All rights reserved.
+          © {new Date().getFullYear()} TeleCRM. All rights reserved.
         </Typography>
       </Box>
     </Box>

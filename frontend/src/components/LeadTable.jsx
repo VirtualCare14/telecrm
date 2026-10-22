@@ -3,7 +3,7 @@ import {
   Table, TableHead, TableRow, TableCell, TableBody,
   Chip, Box, Typography, Skeleton, TableContainer, Paper,
   Button, Menu, MenuItem, ListItemIcon, ListItemText, Divider,
-  Dialog, DialogTitle, DialogContent, DialogActions, CircularProgress, Alert
+  Dialog, DialogTitle, DialogContent, DialogActions, CircularProgress, Alert, Tooltip
 } from '@mui/material';
 import {
   KeyboardArrowDown, Delete as DeleteIcon, Visibility, PhoneInTalk,
@@ -16,6 +16,7 @@ import { useAuthStore } from '../store/authStore';
 import { formatDateTime } from '../utils/dateHelpers';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { deleteLead } from '../services/leadsService';
+import { classifyLead } from '../utils/leadScoring';
 
 export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead }) {
   const navigate = useNavigate();
@@ -123,7 +124,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
     }
   };
 
-  const colCount = isAdmin ? 10 : 9;
+  const colCount = isAdmin ? 11 : 10;
 
   if (loading) {
     return (
@@ -131,7 +132,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
         <Table>
           <TableHead>
             <TableRow>
-              {['Lead #', 'Organization', 'Primary Contact', 'Phone', 'Source', 'Latest Disposition', 'Follow-up', 'Owner', 'Status'].map((h) => (
+              {['Lead #', 'Organization', 'Primary Contact', 'Phone', 'Source', 'Latest Disposition', 'Follow-up', 'Owner', 'Status', 'Temperature'].map((h) => (
                 <TableCell key={h} sx={{ fontWeight: 600 }}>{h}</TableCell>
               ))}
               {isAdmin && <TableCell align="center" sx={{ fontWeight: 600 }}>Action</TableCell>}
@@ -166,6 +167,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
               <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Follow-up</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Owner</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Status</TableCell>
+              <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Temperature</TableCell>
               {isAdmin && (
                 <TableCell align="center" sx={{ fontWeight: 600, fontSize: 13 }}>Action</TableCell>
               )}
@@ -195,9 +197,14 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
                     </Typography>
                   </TableCell>
                   <TableCell>
-                    <Typography fontWeight={500} fontSize={13}>
+                    <Typography fontWeight={600} fontSize={13}>
                       {l.organizationName}
                     </Typography>
+                    {l.createdAt && (
+                      <Typography variant="caption" sx={{ color: 'text.secondary', fontSize: 11, display: 'block' }}>
+                        Created {formatDateTime(l.createdAt)}
+                      </Typography>
+                    )}
                   </TableCell>
                   <TableCell sx={{ fontSize: 13 }}>{l.primaryContact?.name || '—'}</TableCell>
                   <TableCell sx={{ fontSize: 13 }}>{l.primaryContact?.phone || '—'}</TableCell>
@@ -275,6 +282,99 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
                         sx={{ height: 22, fontSize: 11, cursor: 'pointer' }}
                       />
                     )}
+                  </TableCell>
+                  <TableCell>
+                    {(() => {
+                      const classification = l.classification || classifyLead(l);
+                      if (classification.isTerminal) {
+                        return (
+                          <Tooltip
+                            arrow
+                            title={
+                              <Box sx={{ p: 0.5 }}>
+                                <Typography variant="caption" fontWeight={700} sx={{ display: 'block', mb: 0.5 }}>
+                                  {classification.scoreLabel}
+                                </Typography>
+                                {classification.reasons.map((r, idx) => (
+                                  <Typography key={idx} variant="caption" sx={{ display: 'block', fontSize: 11, color: 'text.secondary' }}>
+                                    • {r}
+                                  </Typography>
+                                ))}
+                              </Box>
+                            }
+                          >
+                            <Typography sx={{ fontSize: 12, color: 'text.secondary', cursor: 'help' }}>—</Typography>
+                          </Tooltip>
+                        );
+                      }
+
+                      const { badge, score, scoreLabel, indicator, reasons } = classification;
+                      return (
+                        <Tooltip
+                          arrow
+                          componentsProps={{
+                            tooltip: {
+                              sx: {
+                                bgcolor: '#0f172a',
+                                color: '#f8fafc',
+                                boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+                                borderRadius: 2,
+                                p: 1.5,
+                                maxWidth: 320,
+                              }
+                            }
+                          }}
+                          title={
+                            <Box>
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75, pb: 0.75, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                                <Typography variant="subtitle2" fontWeight={700} sx={{ color: badge.color, display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                  {badge.label === 'Hot' ? '🔥 Hot Lead' : badge.label === 'Warm' ? '⚡ Warm Lead' : '❄️ Cold Lead'}
+                                </Typography>
+                                <Chip
+                                  label={`${score}/100`}
+                                  size="small"
+                                  sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}
+                                />
+                              </Box>
+                              <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mb: 1, fontStyle: 'italic' }}>
+                                {indicator}
+                              </Typography>
+                              <Typography variant="caption" fontWeight={700} sx={{ color: '#e2e8f0', display: 'block', mb: 0.5 }}>
+                                Scoring Reasons:
+                              </Typography>
+                              <Box sx={{ pl: 0.5 }}>
+                                {reasons.map((reason, idx) => (
+                                  <Typography key={idx} variant="caption" sx={{ display: 'block', fontSize: 11, color: '#cbd5e1', mb: 0.25 }}>
+                                    • {reason}
+                                  </Typography>
+                                ))}
+                              </Box>
+                            </Box>
+                          }
+                        >
+                          <Chip
+                            label={
+                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                <span>{badge.label === 'Hot' ? '🔥' : badge.label === 'Warm' ? '⚡' : '❄️'}</span>
+                                <span>{badge.label}</span>
+                                <span style={{ opacity: 0.75, fontSize: 10 }}>({score})</span>
+                              </Box>
+                            }
+                            size="small"
+                            sx={{
+                              height: 22,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              bgcolor: badge.bg,
+                              color: badge.color,
+                              border: `1px solid ${badge.border}`,
+                              cursor: 'help',
+                              borderRadius: 1.5,
+                            }}
+                          />
+                        </Tooltip>
+                      );
+                    })()}
                   </TableCell>
                   {isAdmin && (
                     <TableCell align="center" onClick={(e) => e.stopPropagation()}>

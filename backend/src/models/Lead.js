@@ -11,6 +11,46 @@ const leadSchema = new mongoose.Schema({
   sourceRemarks: { type: String, default: '' },
   currentOwner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  updatedByName: { type: String, default: null },
+  hospitalCoordinates: {
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    isVerified: { type: Boolean, default: false },
+    verifiedAt: { type: Date, default: null },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    source: { type: String, default: null },
+  },
+  createdLocation: {
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    accuracy: { type: Number, default: null },
+    capturedAt: { type: Date, default: null },
+    status: {
+      type: String,
+      enum: ['Captured', 'Permission Denied', 'Unavailable', 'Timed Out', 'Not Requested'],
+      default: 'Not Requested',
+    },
+    distanceMetres: { type: Number, default: null },
+    geofenceStatus: {
+      type: String,
+      enum: ['Passed', 'Failed', 'Exempt', 'Not Verified'],
+      default: 'Not Verified',
+    },
+    geofenceReason: { type: String, default: null },
+  },
+  createdDeviceInstallationId: { type: String, default: null, trim: true },
+  createdDeviceName: { type: String, default: null, trim: true },
+  visitPhoto: {
+    url: { type: String, default: null },
+    filename: { type: String, default: null },
+    contentType: { type: String, default: null },
+    sizeBytes: { type: Number, default: null },
+    capturedAt: { type: Date, default: null },
+    capturedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    capturedByName: { type: String, default: null },
+    deviceInstallationId: { type: String, default: null },
+  },
   primaryContact: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactPerson' },
   latestDisposition: { type: String },
   latestRemark: { type: String },
@@ -36,6 +76,25 @@ const leadSchema = new mongoose.Schema({
     assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     assignedByName: { type: String },
     recordedAt: { type: Date },
+    latitude: { type: Number, default: null },
+    longitude: { type: Number, default: null },
+    accuracy: { type: Number, default: null },
+    locationCapturedAt: { type: Date, default: null },
+    locationStatus: { 
+      type: String, 
+      enum: ['Captured', 'Permission Denied', 'Unavailable', 'Timed Out', 'Not Requested'], 
+      default: 'Not Requested' 
+    },
+    deviceInstallationId: { type: String, default: null, trim: true },
+    hospitalLatitude: { type: Number, default: null },
+    hospitalLongitude: { type: Number, default: null },
+    distanceMetres: { type: Number, default: null },
+    geofenceStatus: {
+      type: String,
+      enum: ['Passed', 'Failed', 'Exempt', 'Not Verified'],
+      default: 'Not Verified',
+    },
+    geofenceReason: { type: String, default: null },
   },
   latestDemo: {
     demoId: { type: mongoose.Schema.Types.ObjectId, ref: 'Demo' },
@@ -84,6 +143,8 @@ const leadSchema = new mongoose.Schema({
 // Indexes for performance
 leadSchema.index({ leadNumber: 1 });
 leadSchema.index({ currentOwner: 1 });
+leadSchema.index({ createdBy: 1 });
+leadSchema.index({ updatedBy: 1 });
 leadSchema.index({ organizationName: 1 });
 leadSchema.index({ nextFollowUpAt: 1 });
 leadSchema.index({ closureStatus: 1 });

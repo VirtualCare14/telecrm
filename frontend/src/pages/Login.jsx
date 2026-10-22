@@ -1,8 +1,7 @@
 import React, { useState } from 'react';
 import {
   Box, Paper, TextField, Button, Typography, Alert,
-  InputAdornment, IconButton, Avatar, CircularProgress,
-  Chip, Stack
+  InputAdornment, IconButton, Avatar, CircularProgress
 } from '@mui/material';
 import { Visibility, VisibilityOff, Business } from '@mui/icons-material';
 import { login } from '../services/authService';
@@ -167,14 +166,17 @@ export default function Login() {
             </Alert>
           )}
 
-          <Box component="form" onSubmit={handleSubmit}>
+          <Box component="form" onSubmit={handleSubmit} noValidate>
             <TextField
               fullWidth
+              id="usernameOrEmail"
+              name="usernameOrEmail"
               label="Email or Username"
               value={usernameOrEmail}
               onChange={(e) => setUsernameOrEmail(e.target.value)}
               required
               autoFocus
+              autoComplete="username"
               disabled={loading}
               sx={{ 
                 '& .MuiOutlinedInput-root': { borderRadius: 2 },
@@ -183,11 +185,14 @@ export default function Login() {
             />
             <TextField
               fullWidth
+              id="password"
+              name="password"
               type={showPassword ? 'text' : 'password'}
               label="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete="current-password"
               disabled={loading}
               sx={{ 
                 '& .MuiOutlinedInput-root': { borderRadius: 2 },
@@ -196,7 +201,12 @@ export default function Login() {
               InputProps={{
                 endAdornment: (
                   <InputAdornment position="end">
-                    <IconButton onClick={() => setShowPassword(!showPassword)} edge="end" size="small">
+                    <IconButton
+                      onClick={() => setShowPassword(!showPassword)}
+                      edge="end"
+                      size="small"
+                      aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    >
                       {showPassword ? <VisibilityOff /> : <Visibility />}
                     </IconButton>
                   </InputAdornment>
@@ -225,45 +235,9 @@ export default function Login() {
             </Button>
           </Box>
 
-          {/* Quick Fill Credentials Helper */}
-          <Box sx={{ mt: 3, pt: 2.5, borderTop: '1px dashed', borderColor: 'divider' }}>
-            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mb: 1.5, fontWeight: 600, textAlign: 'center' }}>
-              Quick Fill Credentials (Click to load):
-            </Typography>
-            <Stack direction="row" spacing={1} justifyContent="center" flexWrap="wrap" useFlexGap sx={{ gap: 1 }}>
-              <Chip
-                size="small"
-                label="Sales Agent (Prince)"
-                onClick={() => { setUsernameOrEmail('Prince0908'); setPassword('Prince@1402'); setError(null); }}
-                sx={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, borderRadius: 1.5 }}
-                color="warning"
-                variant="outlined"
-              />
-              <Chip
-                size="small"
-                label="Calling Agent (Jyoti)"
-                onClick={() => { setUsernameOrEmail('jyoti0411'); setPassword('Jyoti@1402'); setError(null); }}
-                sx={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, borderRadius: 1.5 }}
-                color="info"
-                variant="outlined"
-              />
-              <Chip
-                size="small"
-                label="Admin"
-                onClick={() => { setUsernameOrEmail('admin'); setPassword('Admin123!'); setError(null); }}
-                sx={{ cursor: 'pointer', fontSize: 11, fontWeight: 600, borderRadius: 1.5 }}
-                color="primary"
-                variant="outlined"
-              />
-            </Stack>
-            <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 1.5, textAlign: 'center', fontSize: 11 }}>
-              💡 Admin: Admin123! | Calling Agent: Jyoti@1402 | Sales Agent: Prince@1402
-            </Typography>
-          </Box>
-
-          <Box sx={{ mt: 2.5, textAlign: 'center' }}>
+          <Box sx={{ mt: 3, textAlign: 'center' }}>
             <Typography variant="caption" color="text.secondary">
-              © 2024 TeleCRM. All rights reserved.
+              © {new Date().getFullYear()} TeleCRM. All rights reserved.
             </Typography>
           </Box>
         </Paper>

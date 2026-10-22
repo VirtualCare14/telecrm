@@ -26,7 +26,7 @@ export function toISOFromLocalDatetime(localStr) {
   return d.toISOString();
 }
 
-export function getDateRangeFromFilter(filter) {
+export function getDateRangeFromFilter(filter, extra = {}) {
   const now = new Date();
   const todayStr = formatDateToYYYYMMDD(now);
   
@@ -49,6 +49,19 @@ export function getDateRangeFromFilter(filter) {
     case 'thisMonth': {
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       return { startDate: formatDateToYYYYMMDD(monthStart), endDate: todayStr };
+    }
+    case 'single': {
+      const d = extra.singleDate || todayStr;
+      return { startDate: d, endDate: d };
+    }
+    case 'month': {
+      const m = extra.selectedMonth || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const [year, mon] = m.split('-').map(Number);
+      const lastDay = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+      return { startDate: `${m}-01`, endDate: `${m}-${String(lastDay).padStart(2, '0')}` };
+    }
+    case 'custom': {
+      return { startDate: extra.customStart || '', endDate: extra.customEnd || '' };
     }
     default:
       return {};

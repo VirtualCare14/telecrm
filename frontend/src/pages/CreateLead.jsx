@@ -11,11 +11,16 @@ import { LEAD_SOURCES, INDUSTRIES, ORGANIZATION_TYPES } from '../utils/constants
 import { useAuthStore } from '../store/authStore';
 import ImportLeadsModal from '../components/ImportLeadsModal';
 import { downloadExcelTemplate } from '../utils/excelImportHelper';
+import { getDeviceInstallationId, getDeviceName, captureCurrentLocation } from '../utils/deviceLocationHelper';
+import VisitLocationCaptureBox from '../components/VisitLocationCaptureBox';
+import LiveCameraCapture from '../components/LiveCameraCapture';
+import { calculateHaversineDistance, validateSalesAgentGeofence } from '../utils/geoUtils';
 
 export default function CreateLead() {
   const user = useAuthStore((s) => s.user);
   const [form, setForm] = useState({
     organizationName: '', industry: '', organizationType: '', address: '', leadSource: '',
+    hospitalLatitude: '', hospitalLongitude: '',
   });
   const [customSource, setCustomSource] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -32,8 +37,54 @@ export default function CreateLead() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
+  const [capturedPhoto, setCapturedPhoto] = useState(null);
   const navigate = useNavigate();
   const isAdmin = user?.role === 'ADMIN' || (user?.agentRole && user.agentRole.toLowerCase() === 'admin');
+  const userAgentRole = (user?.agentRole || '').toLowerCase();
+  const isSalesAgent = (user?.role === 'AGENT' || !isAdmin) && userAgentRole.includes('sales');
+
+  // Location and Device state
+  const [deviceId, setDeviceId] = useState('');
+  const [deviceName, setDeviceName] = useState('');
+  const [locationLoading, setLocationLoading] = useState(false);
+  const [locationData, setLocationData] = useState({
+    status: 'Not Requested',
+    latitude: null,
+    longitude: null,
+    accuracy: null,
+    capturedAt: null,
+    error: null,
+    googleMapsUrl: null,
+  });
+
+  const fetchLocation = async () => {
+    setLocationLoading(true);
+    try {
+      const res = await captureCurrentLocation();
+      setLocationData(res);
+    } catch (err) {
+      setLocationData({
+        status: 'Unavailable',
+        latitude: null,
+        longitude: null,
+        accuracy: null,
+        capturedAt: null,
+        error: err.message || 'Unable to retrieve location',
+        googleMapsUrl: null,
+      });
+    } finally {
+      setLocationLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const res = getDeviceInstallationId();
+    const id = (typeof res === 'object' && res !== null) ? (res.deviceInstallationId || '') : (res || '');
+    setDeviceId(id);
+    const devName = getDeviceName();
+    setDeviceName(devName);
+    fetchLocation();
+  }, []);
 
   useEffect(() => {
     if (isAdmin) {
@@ -79,6 +130,12 @@ export default function CreateLead() {
       return;
     }
 
+    // Mandatory live camera photo validation for Sales Agents
+    if (isSalesAgent && !capturedPhoto) {
+      setCreateError('A live camera photo of the visit is mandatory for Sales Agents before submitting this lead. Please capture a live photo.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const finalLeadSource = form.leadSource === 'Other' ? customSource.trim() : form.leadSource;
@@ -96,10 +153,34 @@ export default function CreateLead() {
           altPhone: contact.altPhone,
           email: contact.email,
         }],
+        ...(form.hospitalLatitude && form.hospitalLongitude ? {
+          hospitalCoordinates: {
+            latitude: Number(form.hospitalLatitude),
+            longitude: Number(form.hospitalLongitude),
+            isVerified: true,
+          }
+        } : {}),
+        ...(capturedPhoto ? {
+          visitPhoto: {
+            data: capturedPhoto,
+            capturedAt: new Date().toISOString(),
+          }
+        } : {}),
         ...(isAdmin && selectedAgent ? { currentOwner: selectedAgent } : {}),
+        createdLocation: {
+          latitude: locationData.latitude,
+          longitude: locationData.longitude,
+          accuracy: locationData.accuracy,
+          capturedAt: locationData.capturedAt,
+          status: locationData.status || 'Not Requested',
+        },
+        createdDeviceInstallationId: (typeof deviceId === 'object' && deviceId !== null)
+          ? (deviceId.deviceInstallationId || null)
+          : (deviceId || null),
+        createdDeviceName: deviceName || getDeviceName(),
       };
       const lead = await createLead(payload);
-      navigate(isAdmin ? '/leads' : '/agent/leads');
+      navigate(isAdmin ? '/leads' : '/agent/leads', { state: { refresh: true, createdLeadId: lead?.lead?._id } });
     } catch (err) {
       if (err.validationErrors) {
         setFieldErrors(err.validationErrors);
@@ -234,6 +315,28 @@ export default function CreateLead() {
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Hospital Latitude (Verified Coordinates)"
+                placeholder="e.g. 12.971598"
+                value={form.hospitalLatitude}
+                onChange={handleFormChange('hospitalLatitude')}
+                helperText="Optional registered GPS coordinate"
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                label="Hospital Longitude (Verified Coordinates)"
+                placeholder="e.g. 77.594562"
+                value={form.hospitalLongitude}
+                onChange={handleFormChange('hospitalLongitude')}
+                helperText="Optional registered GPS coordinate"
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
             <Grid item xs={12} md={6}>
               <FormControl fullWidth required error={Boolean(fieldErrors.leadSource)} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}>
                 <InputLabel id="create-lead-source-label">Lead Source</InputLabel>
@@ -304,6 +407,38 @@ export default function CreateLead() {
               />
             </Grid>
           </Grid>
+
+          {isSalesAgent && (
+            <Box sx={{ mb: 3 }}>
+              <LiveCameraCapture
+                photoData={capturedPhoto}
+                onPhotoCaptured={(dataUrl) => {
+                  setCapturedPhoto(dataUrl);
+                  setCreateError(null);
+                }}
+                onRetake={() => setCapturedPhoto(null)}
+                disabled={submitting}
+              />
+            </Box>
+          )}
+
+          <Box sx={{ mb: 3 }}>
+            <VisitLocationCaptureBox
+              title="Current Location & Device (Optional)"
+              disclaimerText="* Captures initial lead-creation GPS presence and device ID if available. Location is optional and will not block lead creation."
+              locationData={locationData}
+              deviceId={deviceId}
+              deviceName={deviceName}
+              hospitalCoordinates={
+                (form.hospitalLatitude && form.hospitalLongitude)
+                  ? { latitude: Number(form.hospitalLatitude), longitude: Number(form.hospitalLongitude) }
+                  : null
+              }
+              isSalesAgent={isSalesAgent}
+              loading={locationLoading}
+              onRetry={fetchLocation}
+            />
+          </Box>
 
           <Divider sx={{ my: 3 }} />
 
@@ -377,7 +512,7 @@ export default function CreateLead() {
               type="submit"
               variant="contained"
               startIcon={submitting ? <CircularProgress size={20} color="inherit" /> : <CheckCircle />}
-              disabled={submitting}
+              disabled={submitting || (isSalesAgent && !capturedPhoto)}
               sx={{ 
                 borderRadius: 2, 
                 textTransform: 'none', 
@@ -391,6 +526,11 @@ export default function CreateLead() {
               {submitting ? 'Creating...' : 'Create Lead'}
             </Button>
           </Box>
+          {isSalesAgent && !capturedPhoto && (
+            <Typography variant="caption" sx={{ color: 'error.main', display: 'block', mt: 1.5, fontWeight: 600 }}>
+              * A live camera photo of the visit is required for Sales Agents before this lead can be submitted.
+            </Typography>
+          )}
         </Box>
 
         {/* Duplicate Check Results */}
