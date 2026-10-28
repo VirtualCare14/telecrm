@@ -108,6 +108,7 @@ const leadSchema = new mongoose.Schema({
     assignedByName: { type: String },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     updatedByName: { type: String },
+    googleMapsUrl: { type: String, default: null },
     scheduledAt: { type: Date },
     updatedAt: { type: Date },
   },

@@ -14,6 +14,7 @@ const demoSchema = new mongoose.Schema({
     required: true 
   },
   remarks: { type: String, default: '' },
+  googleMapsUrl: { type: String, default: null },
 }, { timestamps: true });
 
 demoSchema.index({ lead: 1, createdAt: -1 });

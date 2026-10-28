@@ -4,6 +4,7 @@ const Demo = require('../models/Demo');
 const LeadActivity = require('../models/LeadActivity');
 
 const User = require('../models/User');
+const { resolveHospitalMapsLocation, generateDemoWhatsAppMessage } = require('../utils/whatsappHelper');
 
 function getScheduledDateTime(dateInput, timeInput) {
   const d = new Date(dateInput);
@@ -33,7 +34,7 @@ exports.createDemo = async (req, res, next) => {
     const leadId = req.params.id;
     const { demoDate, demoTime, remarks = '', salesAgent: targetSalesAgent, salesAgentId } = req.body;
 
-    const lead = await Lead.findById(leadId).session(session);
+    const lead = await Lead.findById(leadId).populate('primaryContact').session(session);
     if (!lead) {
       await session.abortTransaction();
       session.endSession();
@@ -64,6 +65,10 @@ exports.createDemo = async (req, res, next) => {
     const demoStatus = 'Planned';
     const demoRemarks = (remarks || '').trim();
 
+    // Resolve hospital Google Maps location (verified coords > complete address > unavailable)
+    const mapLocation = resolveHospitalMapsLocation(lead);
+    const googleMapsUrl = mapLocation.isAvailable ? mapLocation.url : null;
+
     const createdDemos = await Demo.create([{
       lead: leadId,
       salesAgent: assignedSalesAgentId,
@@ -73,6 +78,7 @@ exports.createDemo = async (req, res, next) => {
       demoTime: demoTime.trim(),
       status: demoStatus,
       remarks: demoRemarks,
+      googleMapsUrl,
     }], { session });
 
     const demoDoc = createdDemos[0];
@@ -90,6 +96,7 @@ exports.createDemo = async (req, res, next) => {
       assignedByName,
       updatedBy: req.userId,
       updatedByName: assignedByName,
+      googleMapsUrl,
       scheduledAt: new Date(),
       updatedAt: new Date(),
     };
@@ -112,6 +119,7 @@ exports.createDemo = async (req, res, next) => {
         salesAgentId: assignedSalesAgentId.toString(),
         salesAgentName,
         assignedByName,
+        googleMapsUrl,
       },
     }], { session });
 
@@ -123,7 +131,21 @@ exports.createDemo = async (req, res, next) => {
       .populate('assignedBy', 'fullName email username agentRole')
       .populate('updatedBy', 'fullName email username agentRole');
 
-    res.status(201).json({ demo: populated, latestDemo: lead.latestDemo });
+    const whatsAppMessage = generateDemoWhatsAppMessage({
+      hospitalName: lead.organizationName,
+      address: lead.address,
+      demoDate: demoDateVal,
+      demoTime: demoTime.trim(),
+      salesAgentName,
+      contactPerson: lead.primaryContact?.name,
+      contactPhone: lead.primaryContact?.phone,
+      remarks: demoRemarks,
+      googleMapsUrl,
+      lead,
+      isRescheduled: false,
+    });
+
+    res.status(201).json({ demo: populated, latestDemo: lead.latestDemo, googleMapsUrl, whatsAppMessage });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -138,7 +160,7 @@ exports.updateDemoStatus = async (req, res, next) => {
     const { id: leadId, demoId } = req.params;
     const { status, remarks, demoDate, demoTime } = req.body;
 
-    const lead = await Lead.findById(leadId).session(session);
+    const lead = await Lead.findById(leadId).populate('primaryContact').session(session);
     if (!lead) {
       await session.abortTransaction();
       session.endSession();
@@ -194,10 +216,15 @@ exports.updateDemoStatus = async (req, res, next) => {
     const oldTime = demo.demoTime;
     const oldRemarks = demo.remarks;
 
+    // Resolve latest hospital Google Maps location
+    const mapLocation = resolveHospitalMapsLocation(lead);
+    const googleMapsUrl = mapLocation.isAvailable ? mapLocation.url : null;
+
     demo.status = targetStatus;
     if (remarks !== undefined) demo.remarks = remarks.trim();
     if (demoDate) demo.demoDate = new Date(demoDate);
     if (demoTime) demo.demoTime = demoTime.trim();
+    demo.googleMapsUrl = googleMapsUrl;
     demo.updatedBy = req.userId;
     await demo.save({ session });
 
@@ -214,6 +241,7 @@ exports.updateDemoStatus = async (req, res, next) => {
       assignedByName: lead.latestDemo?.assignedByName || updaterName,
       updatedBy: req.userId,
       updatedByName: updaterName,
+      googleMapsUrl,
       scheduledAt: lead.latestDemo?.scheduledAt || demo.createdAt,
       updatedAt: new Date(),
     };
@@ -244,6 +272,7 @@ exports.updateDemoStatus = async (req, res, next) => {
         salesAgentName: lead.latestDemo?.salesAgentName,
         assignedByName: lead.latestDemo?.assignedByName,
         updatedByName: updaterName,
+        googleMapsUrl,
       },
     }], { session });
 
@@ -255,7 +284,21 @@ exports.updateDemoStatus = async (req, res, next) => {
       .populate('assignedBy', 'fullName email username agentRole')
       .populate('updatedBy', 'fullName email username agentRole');
 
-    res.json({ demo: populated, latestDemo: lead.latestDemo });
+    const whatsAppMessage = generateDemoWhatsAppMessage({
+      hospitalName: lead.organizationName,
+      address: lead.address,
+      demoDate: demo.demoDate,
+      demoTime: demo.demoTime,
+      salesAgentName: lead.latestDemo?.salesAgentName || updaterName,
+      contactPerson: lead.primaryContact?.name,
+      contactPhone: lead.primaryContact?.phone,
+      remarks: demo.remarks,
+      googleMapsUrl,
+      lead,
+      isRescheduled: isReschedule,
+    });
+
+    res.json({ demo: populated, latestDemo: lead.latestDemo, googleMapsUrl, whatsAppMessage });
   } catch (err) {
     await session.abortTransaction();
     session.endSession();

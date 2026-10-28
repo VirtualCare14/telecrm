@@ -37,6 +37,8 @@ import {
   CircularProgress,
   Switch,
   FormControlLabel,
+  Checkbox,
+  Link,
 } from '@mui/material';
 import {
   Person,
@@ -91,7 +93,7 @@ import { formatDate, formatTime, isOverdue, isUpcoming, formatDateToYYYYMMDD, ge
 import { CALL_DISPOSITIONS, LOST_REASONS, DATE_FILTERS } from '../utils/constants';
 import { getNextAction } from '../utils/nextActionHelper';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
-import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveSalesAgentForLead } from '../utils/whatsappHelper';
+import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveSalesAgentForLead, resolveHospitalMapsLink } from '../utils/whatsappHelper';
 import KpiCard from '../components/dashboard/KpiCard';
 import TodayActionsSection from '../components/dashboard/TodayActionsSection';
 import RecentActivitySection from '../components/dashboard/RecentActivitySection';
@@ -217,6 +219,7 @@ export default function AgentDashboard() {
   const [demoRemarks, setDemoRemarks] = useState('');
   const [savingDemo, setSavingDemo] = useState(false);
   const [demoError, setDemoError] = useState(null);
+  const [demoNotifyWhatsApp, setDemoNotifyWhatsApp] = useState(true);
 
   // Outcome Modal State (for Sales Agent - Win/Lost outcome workflow)
   const [outcomeOpen, setOutcomeOpen] = useState(false);
@@ -273,6 +276,7 @@ export default function AgentDashboard() {
     scheduledDate: '',
     scheduledTime: '',
     remarks: '',
+    googleMapsUrl: null,
     messageContent: '',
   });
   const [whatsAppError, setWhatsAppError] = useState(null);
@@ -809,9 +813,11 @@ export default function AgentDashboard() {
 
     setSavingDemo(true);
     setDemoError(null);
+    const targetLeadForWhatsApp = selectedDemoLead;
+    let saveResult = null;
     try {
       if (existingDemo && existingDemo.demoId) {
-        await updateDemoStatus(selectedDemoLead._id, existingDemo.demoId, {
+        saveResult = await updateDemoStatus(selectedDemoLead._id, existingDemo.demoId, {
           status: demoStatus,
           remarks: demoRemarks.trim(),
           demoDate,
@@ -825,7 +831,7 @@ export default function AgentDashboard() {
             : 'Demo details updated successfully!'
         );
       } else {
-        await createDemo(selectedDemoLead._id, {
+        saveResult = await createDemo(selectedDemoLead._id, {
           demoDate,
           demoTime,
           status: 'Planned', // Requirement 2: initial status is always Planned
@@ -838,6 +844,25 @@ export default function AgentDashboard() {
       setExistingDemo(null);
       await Promise.all([fetchMyLeads(), fetchDashboardData()]);
       if (isSalesAgent) await fetchAssignedActivities();
+
+      if (demoNotifyWhatsApp && demoStatus === 'Planned' && targetLeadForWhatsApp) {
+        const isRescheduledDemo = Boolean(existingDemo && existingDemo.demoId);
+        const updatedTargetLead = {
+          ...targetLeadForWhatsApp,
+          latestDemo: saveResult?.latestDemo || saveResult?.data?.latestDemo || {
+            ...(targetLeadForWhatsApp.latestDemo || {}),
+            demoDate,
+            demoTime,
+            remarks: demoRemarks.trim(),
+            status: 'Planned',
+            scheduledAt: isRescheduledDemo
+              ? (targetLeadForWhatsApp.latestDemo?.scheduledAt || new Date(Date.now() - 60000))
+              : new Date(),
+            updatedAt: new Date(),
+          },
+        };
+        handleOpenWhatsApp('Demo', updatedTargetLead, isRescheduledDemo);
+      }
     } catch (err) {
       setDemoError(err.response?.data?.message || 'Failed to save demo');
     } finally {
@@ -1100,7 +1125,7 @@ export default function AgentDashboard() {
   };
 
   // Open WhatsApp Sales Agent Modal
-  const handleOpenWhatsApp = async (activityType = 'Demo', lead = null) => {
+  const handleOpenWhatsApp = async (activityType = 'Demo', lead = null, customIsRescheduled = null) => {
     const targetLead = lead || actionMenuLead;
     if (!targetLead) return;
     setSelectedWhatsAppLead(targetLead);
@@ -1170,6 +1195,22 @@ export default function AgentDashboard() {
     const contactPerson = targetLead.primaryContact?.name || '—';
     const contactPhone = targetLead.primaryContact?.phone || '—';
 
+    const locRes = resolveHospitalMapsLink({
+      hospitalCoordinates: targetLead.hospitalCoordinates,
+      address: targetLead.address,
+      organizationName: targetLead.organizationName,
+      lead: targetLead,
+    });
+
+    const isRescheduled = customIsRescheduled !== null
+      ? customIsRescheduled
+      : Boolean(
+          targetLead.latestDemo?.status === 'Planned' &&
+          targetLead.latestDemo?.scheduledAt &&
+          targetLead.latestDemo?.updatedAt &&
+          new Date(targetLead.latestDemo.updatedAt).getTime() > new Date(targetLead.latestDemo.scheduledAt).getTime()
+        );
+
     const templateMsg = generateSalesAgentTemplate({
       salesAgentName: resolvedAgent.salesAgentName,
       activityType,
@@ -1180,6 +1221,11 @@ export default function AgentDashboard() {
       contactPerson,
       contactPhone,
       remarks,
+      address: targetLead.address,
+      hospitalCoordinates: targetLead.hospitalCoordinates,
+      googleMapsUrl: locRes.isAvailable ? locRes.url : null,
+      lead: targetLead,
+      isRescheduled,
     });
 
     setWhatsAppData({
@@ -1191,6 +1237,8 @@ export default function AgentDashboard() {
       scheduledDate,
       scheduledTime,
       remarks,
+      googleMapsUrl: locRes.isAvailable ? locRes.url : null,
+      isRescheduled,
       messageContent: templateMsg,
     });
     setWhatsAppError(null);
@@ -1215,6 +1263,11 @@ export default function AgentDashboard() {
       contactPerson: selectedWhatsAppLead?.primaryContact?.name || '—',
       contactPhone: selectedWhatsAppLead?.primaryContact?.phone || '—',
       remarks: whatsAppData.remarks,
+      address: selectedWhatsAppLead?.address,
+      hospitalCoordinates: selectedWhatsAppLead?.hospitalCoordinates,
+      googleMapsUrl: whatsAppData.googleMapsUrl,
+      lead: selectedWhatsAppLead,
+      isRescheduled: whatsAppData.isRescheduled,
     });
 
     setWhatsAppData((p) => ({
@@ -1268,6 +1321,7 @@ export default function AgentDashboard() {
         salesAgentName: whatsAppData.salesAgentName || undefined,
         scheduledDate: whatsAppData.scheduledDate || undefined,
         scheduledTime: whatsAppData.scheduledTime || undefined,
+        googleMapsUrl: whatsAppData.googleMapsUrl || undefined,
         remarks: whatsAppData.remarks || undefined,
         status: 'Opened in WhatsApp (wa.me)',
       });
@@ -3399,6 +3453,37 @@ export default function AgentDashboard() {
               }
               sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
             />
+
+            {demoStatus === 'Planned' && (
+              <Box
+                sx={{
+                  p: 1.5,
+                  borderRadius: 2,
+                  bgcolor: '#f0fdf4',
+                  border: '1px solid #bbf7d0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.5,
+                }}
+              >
+                <Checkbox
+                  checked={demoNotifyWhatsApp}
+                  onChange={(e) => setDemoNotifyWhatsApp(e.target.checked)}
+                  color="success"
+                  size="small"
+                  sx={{ p: 0.5 }}
+                />
+                <Box>
+                  <Typography variant="body2" sx={{ fontWeight: 600, color: '#166534', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                    <WhatsAppIcon sx={{ fontSize: 16, color: '#25D366' }} />
+                    Notify Sales Agent via WhatsApp
+                  </Typography>
+                  <Typography variant="caption" sx={{ color: '#15803d', display: 'block' }}>
+                    Opens WhatsApp with demo schedule & exact Google Maps location link
+                  </Typography>
+                </Box>
+              </Box>
+            )}
           </Stack>
         </DialogContent>
 
@@ -4274,6 +4359,11 @@ export default function AgentDashboard() {
                       contactPerson: selectedWhatsAppLead?.primaryContact?.name || '—',
                       contactPhone: selectedWhatsAppLead?.primaryContact?.phone || '—',
                       remarks: whatsAppData.remarks,
+                      address: selectedWhatsAppLead?.address,
+                      hospitalCoordinates: selectedWhatsAppLead?.hospitalCoordinates,
+                      googleMapsUrl: whatsAppData.googleMapsUrl,
+                      lead: selectedWhatsAppLead,
+                      isRescheduled: whatsAppData.isRescheduled,
                     });
 
                     setWhatsAppData((p) => ({
@@ -4387,6 +4477,37 @@ export default function AgentDashboard() {
                   </Typography>
                 </Box>
 
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 10 }}>
+                    Hospital Location
+                  </Typography>
+                  {whatsAppData.googleMapsUrl ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      <Link
+                        href={whatsAppData.googleMapsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        sx={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: '#16a34a',
+                          textDecoration: 'none',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                          '&:hover': { textDecoration: 'underline' },
+                        }}
+                      >
+                        🗺️ Open in Google Maps
+                      </Link>
+                    </Box>
+                  ) : (
+                    <Typography variant="caption" sx={{ color: '#dc2626', fontWeight: 600, display: 'block' }}>
+                      Location unavailable
+                    </Typography>
+                  )}
+                </Box>
+
                 <Box sx={{ ml: 'auto' }}>
                   <Button
                     size="small"
@@ -4402,6 +4523,11 @@ export default function AgentDashboard() {
                         contactPerson: selectedWhatsAppLead?.primaryContact?.name || '—',
                         contactPhone: selectedWhatsAppLead?.primaryContact?.phone || '—',
                         remarks: whatsAppData.remarks,
+                        address: selectedWhatsAppLead?.address,
+                        hospitalCoordinates: selectedWhatsAppLead?.hospitalCoordinates,
+                        googleMapsUrl: whatsAppData.googleMapsUrl,
+                        lead: selectedWhatsAppLead,
+                        isRescheduled: whatsAppData.isRescheduled,
                       });
                       setWhatsAppData((p) => ({ ...p, messageContent: resetMsg }));
                     }}
@@ -4428,7 +4554,7 @@ export default function AgentDashboard() {
                 fullWidth
                 required
                 multiline
-                rows={5}
+                rows={8}
                 value={whatsAppData.messageContent}
                 onChange={(e) => setWhatsAppData((p) => ({ ...p, messageContent: e.target.value }))}
                 placeholder="Type your WhatsApp message..."

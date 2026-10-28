@@ -3,7 +3,8 @@ import {
   Box, Typography, Paper, TextField, Button, Grid, Alert, Divider,
   FormControl, InputLabel, Select, MenuItem, Chip, Tabs, Tab,
   Dialog, DialogTitle, DialogContent, DialogActions, IconButton,
-  CircularProgress, Avatar, Tooltip, Autocomplete, Menu, ListItemIcon, ListItemText, Stack, Link
+  CircularProgress, Avatar, Tooltip, Autocomplete, Menu, ListItemIcon, ListItemText, Stack, Link,
+  Checkbox, FormControlLabel
 } from '@mui/material';
 import {
   ArrowBack, Phone, Edit, Close, CheckCircle, Cancel, Send,
@@ -29,7 +30,7 @@ import { getActiveAgents } from '../services/agentService';
 import { transferLead, requestTransfer } from '../services/transferService';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { formatDateTime, formatDate, formatDateToYYYYMMDD, toLocalDatetimeInput, toISOFromLocalDatetime } from '../utils/dateHelpers';
-import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl } from '../utils/whatsappHelper';
+import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveHospitalMapsLink } from '../utils/whatsappHelper';
 import { CALL_DISPOSITIONS, LOST_REASONS, LEAD_SOURCES, INDUSTRIES, ORGANIZATION_TYPES, SOFTWARE_OPTIONS } from '../utils/constants';
 import { classifyLead } from '../utils/leadScoring';
 import { captureCurrentLocation, getDeviceInstallationId } from '../utils/deviceLocationHelper';
@@ -149,6 +150,7 @@ export default function LeadDetails() {
   const [editingDemoId, setEditingDemoId] = useState(null);
   const [demoError, setDemoError] = useState(null);
   const [savingDemo, setSavingDemo] = useState(false);
+  const [demoNotifyWhatsApp, setDemoNotifyWhatsApp] = useState(true);
 
   // Sales Follow-up Modal State
   const [salesFollowUpOpen, setSalesFollowUpOpen] = useState(false);
@@ -243,6 +245,7 @@ export default function LeadDetails() {
     scheduledDate: '',
     scheduledTime: '',
     remarks: '',
+    googleMapsUrl: null,
     messageContent: '',
   });
   const [whatsAppError, setWhatsAppError] = useState(null);
@@ -738,16 +741,24 @@ export default function LeadDetails() {
 
     setSavingDemo(true);
     setDemoError(null);
+    const isRescheduled = Boolean(editingDemoId);
+    const savedSalesAgentId = demoData.salesAgent;
+    const savedDate = demoData.demoDate;
+    const savedTime = demoData.demoTime;
+    const savedRemarks = demoData.remarks.trim();
+    const savedStatus = demoData.status;
+
+    let savedDemoRes = null;
     try {
       if (editingDemoId) {
-        await updateDemoStatus(id, editingDemoId, {
+        savedDemoRes = await updateDemoStatus(id, editingDemoId, {
           status: demoData.status,
           remarks: demoData.remarks.trim(),
           demoDate: demoData.demoDate,
           demoTime: demoData.demoTime,
         });
       } else {
-        await createDemo(id, {
+        savedDemoRes = await createDemo(id, {
           salesAgent: demoData.salesAgent || undefined,
           demoDate: demoData.demoDate,
           demoTime: demoData.demoTime,
@@ -758,6 +769,18 @@ export default function LeadDetails() {
       setDemoOpen(false);
       setEditingDemoId(null);
       await refresh();
+
+      if (demoNotifyWhatsApp && savedStatus === 'Planned') {
+        handleOpenWhatsApp('Demo Details', {
+          id: savedDemoRes?.demo?._id || savedDemoRes?.data?.demo?._id || editingDemoId,
+          type: 'Demo',
+          date: savedDate,
+          time: savedTime,
+          salesAgent: savedSalesAgentId,
+          remarks: savedRemarks,
+          isRescheduled,
+        });
+      }
     } catch (err) {
       setDemoError(err.response?.data?.message || 'Unable to save demo');
     } finally {
@@ -1187,6 +1210,18 @@ export default function LeadDetails() {
     const primaryContactPerson = lead?.primaryContact?.name || contacts[0]?.name || '—';
     const primaryContactPhone = lead?.primaryContact?.phone || contacts[0]?.phone || '—';
 
+    const locRes = resolveHospitalMapsLink({
+      hospitalCoordinates: lead?.hospitalCoordinates,
+      address: lead?.address,
+      organizationName: lead?.organizationName,
+      lead,
+    });
+
+    const isRescheduled = Boolean(
+      customActivity?.isRescheduled ||
+      (activityType === 'Demo' && demos[0]?.status === 'Planned' && demos[0]?.createdAt && demos[0]?.updatedAt && new Date(demos[0].updatedAt).getTime() > new Date(demos[0].createdAt).getTime())
+    );
+
     const templateMsg = generateSalesAgentTemplate({
       salesAgentName: actSalesAgentName,
       activityType,
@@ -1197,6 +1232,11 @@ export default function LeadDetails() {
       contactPerson: primaryContactPerson,
       contactPhone: primaryContactPhone,
       remarks: actRemarks,
+      address: lead?.address,
+      hospitalCoordinates: lead?.hospitalCoordinates,
+      googleMapsUrl: locRes.isAvailable ? locRes.url : null,
+      lead,
+      isRescheduled,
     });
 
     setWhatsAppData({
@@ -1209,6 +1249,8 @@ export default function LeadDetails() {
       scheduledDate: actDate,
       scheduledTime: actTime,
       remarks: actRemarks,
+      googleMapsUrl: locRes.isAvailable ? locRes.url : null,
+      isRescheduled,
       messageContent: templateMsg,
     });
     setWhatsAppError(null);
@@ -1234,6 +1276,11 @@ export default function LeadDetails() {
       contactPerson: lead?.primaryContact?.name || contacts[0]?.name || '—',
       contactPhone: lead?.primaryContact?.phone || contacts[0]?.phone || '—',
       remarks: whatsAppData.remarks,
+      address: lead?.address,
+      hospitalCoordinates: lead?.hospitalCoordinates,
+      googleMapsUrl: whatsAppData.googleMapsUrl,
+      lead,
+      isRescheduled: whatsAppData.isRescheduled,
     });
 
     setWhatsAppData(p => ({
@@ -1283,6 +1330,7 @@ export default function LeadDetails() {
         salesAgentName: whatsAppData.salesAgentName || undefined,
         scheduledDate: whatsAppData.scheduledDate || undefined,
         scheduledTime: whatsAppData.scheduledTime || undefined,
+        googleMapsUrl: whatsAppData.googleMapsUrl || undefined,
         remarks: whatsAppData.remarks || undefined,
         status: 'Opened in WhatsApp (wa.me)',
       });
@@ -4647,7 +4695,8 @@ export default function LeadDetails() {
                                       date: d.demoDate,
                                       time: d.demoTime,
                                       salesAgent: d.salesAgent,
-                                      remarks: d.remarks
+                                      remarks: d.remarks,
+                                      isRescheduled: Boolean(d.createdAt && d.updatedAt && new Date(d.updatedAt).getTime() > new Date(d.createdAt).getTime()),
                                     })}
                                     sx={{
                                       minWidth: 'auto',
@@ -6101,6 +6150,39 @@ export default function LeadDetails() {
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
+
+            {demoData.status === 'Planned' && (
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    p: 1.5,
+                    borderRadius: 2,
+                    bgcolor: '#f0fdf4',
+                    border: '1px solid #bbf7d0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1.5,
+                  }}
+                >
+                  <Checkbox
+                    checked={demoNotifyWhatsApp}
+                    onChange={(e) => setDemoNotifyWhatsApp(e.target.checked)}
+                    color="success"
+                    size="small"
+                    sx={{ p: 0.5 }}
+                  />
+                  <Box>
+                    <Typography variant="body2" sx={{ fontWeight: 600, color: '#166534', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <WhatsAppIcon sx={{ fontSize: 16, color: '#25D366' }} />
+                      Notify Sales Agent via WhatsApp
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: '#15803d', display: 'block' }}>
+                      Opens WhatsApp with demo schedule & exact Google Maps location link
+                    </Typography>
+                  </Box>
+                </Box>
+              </Grid>
+            )}
           </Grid>
         </DialogContent>
         <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
@@ -6579,6 +6661,11 @@ export default function LeadDetails() {
                       contactPerson: lead?.primaryContact?.name || contacts[0]?.name || '—',
                       contactPhone: lead?.primaryContact?.phone || contacts[0]?.phone || '—',
                       remarks: whatsAppData.remarks,
+                      address: lead?.address,
+                      hospitalCoordinates: lead?.hospitalCoordinates,
+                      googleMapsUrl: whatsAppData.googleMapsUrl,
+                      lead,
+                      isRescheduled: whatsAppData.isRescheduled,
                     });
 
                     setWhatsAppData((p) => ({
@@ -6693,6 +6780,37 @@ export default function LeadDetails() {
                   </Typography>
                 </Box>
 
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontWeight: 600, fontSize: 10 }}>
+                    Hospital Location
+                  </Typography>
+                  {whatsAppData.googleMapsUrl ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                      <Link
+                        href={whatsAppData.googleMapsUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        sx={{
+                          fontSize: 12,
+                          fontWeight: 700,
+                          color: '#16a34a',
+                          textDecoration: 'none',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: 0.5,
+                          '&:hover': { textDecoration: 'underline' },
+                        }}
+                      >
+                        🗺️ Open in Google Maps
+                      </Link>
+                    </Box>
+                  ) : (
+                    <Typography variant="caption" sx={{ color: '#dc2626', fontWeight: 600, display: 'block' }}>
+                      Location unavailable
+                    </Typography>
+                  )}
+                </Box>
+
                 <Box sx={{ ml: 'auto' }}>
                   <Button
                     size="small"
@@ -6708,6 +6826,11 @@ export default function LeadDetails() {
                         contactPerson: lead?.primaryContact?.name || contacts[0]?.name || '—',
                         contactPhone: lead?.primaryContact?.phone || contacts[0]?.phone || '—',
                         remarks: whatsAppData.remarks,
+                        address: lead?.address,
+                        hospitalCoordinates: lead?.hospitalCoordinates,
+                        googleMapsUrl: whatsAppData.googleMapsUrl,
+                        lead,
+                        isRescheduled: whatsAppData.isRescheduled,
                       });
                       setWhatsAppData((p) => ({ ...p, messageContent: resetMsg }));
                     }}
@@ -6734,7 +6857,7 @@ export default function LeadDetails() {
                 fullWidth
                 required
                 multiline
-                rows={5}
+                rows={8}
                 value={whatsAppData.messageContent}
                 onChange={(e) => setWhatsAppData((p) => ({ ...p, messageContent: e.target.value }))}
                 placeholder="Type your WhatsApp message..."

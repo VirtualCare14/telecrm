@@ -58,6 +58,10 @@ exports.createWhatsAppActivity = async (req, res, next) => {
 
     const senderName = req.user?.fullName || req.user?.username || 'Calling Agent';
 
+    const { resolveHospitalMapsLocation } = require('../utils/whatsappHelper');
+    const locRes = resolveHospitalMapsLocation(lead);
+    const mapsUrl = req.body.googleMapsUrl || (locRes.isAvailable ? locRes.url : null);
+
     const activity = await LeadActivity.create({
       lead: leadId,
       action: `WhatsApp: ${messageType}`,
@@ -76,6 +80,7 @@ exports.createWhatsAppActivity = async (req, res, next) => {
         salesAgentName: salesAgentName || null,
         scheduledDate: scheduledDate || null,
         scheduledTime: scheduledTime || null,
+        googleMapsUrl: mapsUrl,
         status,
         sentAt: new Date(),
         sentByName: senderName,
