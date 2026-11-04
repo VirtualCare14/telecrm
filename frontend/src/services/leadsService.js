@@ -169,4 +169,10 @@ export async function sendWhatsAppActivity(leadId, data) {
   const res = await api.post(`/leads/${leadId}/whatsapp`, data);
   return res.data;
 }
-
+
+
+// Lead Temperature & Disposition Classification
+export async function updateLeadClassification(leadId, data) {
+  const res = await api.patch(`/leads/${leadId}/classification`, data);
+  return res.data;
+}

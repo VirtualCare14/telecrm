@@ -14,7 +14,8 @@ import {
   LocationOn, Work, LaptopMac, Star, WarningAmber, CheckCircleOutline,
   DirectionsWalk, EmojiEvents, KeyboardArrowDown, SwapHoriz, PhoneInTalk,
   Event as EventIcon, Visibility, ArrowForward, Delete as DeleteIcon,
-  WhatsApp as WhatsAppIcon
+  WhatsApp as WhatsAppIcon,
+  Whatshot
 } from '@mui/icons-material';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -29,7 +30,8 @@ import {
 import { getActiveAgents } from '../services/agentService';
 import { transferLead, requestTransfer } from '../services/transferService';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
-import { formatDateTime, formatDate, formatDateToYYYYMMDD, toLocalDatetimeInput, toISOFromLocalDatetime } from '../utils/dateHelpers';
+import { formatDateTime, formatDateToYYYYMMDD, formatTimeTo24H, splitDateAnd24HTime, combineDateAndTime, isToday, isOverdue } from '../utils/dateHelpers';
+import LeadActionModal from '../components/LeadActionModal';
 import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveHospitalMapsLink } from '../utils/whatsappHelper';
 import { CALL_DISPOSITIONS, LOST_REASONS, LEAD_SOURCES, INDUSTRIES, ORGANIZATION_TYPES, SOFTWARE_OPTIONS } from '../utils/constants';
 import { classifyLead } from '../utils/leadScoring';
@@ -101,14 +103,22 @@ export default function LeadDetails() {
   const [editFields, setEditFields] = useState({});
   const [fieldErrors, setFieldErrors] = useState({});
 
+  // Lead Action Modal State
+  const [leadActionOpen, setLeadActionOpen] = useState(false);
+
   // Add Call Log Modal
   const [callLogOpen, setCallLogOpen] = useState(false);
   const [callData, setCallData] = useState({
     calledContactId: '',
-    calledAt: toLocalDatetimeInput(new Date()),
+    calledContactName: '',
+    calledContactPhone: '',
+    callDate: formatDateToYYYYMMDD(new Date()),
+    callTime: formatTimeTo24H(new Date()),
+    leadTemperature: '',
     disposition: '',
     remark: '',
-    followUpAt: '',
+    followUpDate: '',
+    followUpTime: '',
     existingSoftwareUsed: '',
     softwareName: '',
   });
@@ -481,14 +491,18 @@ export default function LeadDetails() {
   const handleOpenCallLog = () => {
     setCallError(null);
     const defaultContact = lead?.primaryContact || (contacts.length > 0 ? contacts[0] : null);
+    const followUpSplit = lead?.nextFollowUpAt ? splitDateAnd24HTime(lead.nextFollowUpAt) : { date: '', time: '' };
     setCallData({
       calledContactId: defaultContact?._id || '',
       calledContactName: defaultContact?.name || '',
       calledContactPhone: defaultContact?.phone || '',
-      calledAt: toLocalDatetimeInput(new Date()),
-      disposition: '',
+      callDate: formatDateToYYYYMMDD(new Date()),
+      callTime: formatTimeTo24H(new Date()),
+      leadTemperature: lead?.leadTemperature || lead?.temperature || '',
+      disposition: lead?.latestDisposition || '',
       remark: '',
-      followUpAt: '',
+      followUpDate: followUpSplit.date || '',
+      followUpTime: followUpSplit.time || '',
       existingSoftwareUsed: lead?.existingSoftwareUsed || '',
       softwareName: lead?.softwareName || '',
     });
@@ -501,17 +515,31 @@ export default function LeadDetails() {
       setCallError('Please select or type a contact person');
       return;
     }
+    if (!callData.callDate) {
+      setCallError('Call Date is required');
+      return;
+    }
+    if (!callData.callTime) {
+      setCallError('Call Time is required');
+      return;
+    }
     if (!callData.disposition) { setCallError('Select a disposition'); return; }
     if (!callData.remark) { setCallError('Remark is required'); return; }
     try {
+      const calledAt = combineDateAndTime(callData.callDate, callData.callTime) || new Date().toISOString();
+      const followUpAt = callData.followUpDate
+        ? combineDateAndTime(callData.followUpDate, callData.followUpTime || '10:00')
+        : undefined;
+
       await createCallLog(id, {
         calledContactId: callData.calledContactId || undefined,
         calledContactName: callData.calledContactName || undefined,
         calledContactPhone: callData.calledContactPhone || undefined,
-        calledAt: toISOFromLocalDatetime(callData.calledAt) || new Date().toISOString(),
+        calledAt,
+        leadTemperature: callData.leadTemperature || undefined,
         disposition: callData.disposition,
         remark: callData.remark,
-        followUpAt: toISOFromLocalDatetime(callData.followUpAt),
+        followUpAt,
         existingSoftwareUsed: callData.existingSoftwareUsed || undefined,
         softwareName: callData.softwareName || undefined,
       });
@@ -520,10 +548,13 @@ export default function LeadDetails() {
         calledContactId: '',
         calledContactName: '',
         calledContactPhone: '',
-        calledAt: toLocalDatetimeInput(new Date()),
+        callDate: formatDateToYYYYMMDD(new Date()),
+        callTime: formatTimeTo24H(new Date()),
+        leadTemperature: '',
         disposition: '',
         remark: '',
-        followUpAt: '',
+        followUpDate: '',
+        followUpTime: '',
         existingSoftwareUsed: '',
         softwareName: '',
       });
@@ -1351,6 +1382,9 @@ export default function LeadDetails() {
   const handleSelectAction = (actionKey) => {
     handleCloseActionMenu();
     switch (actionKey) {
+      case 'lead_action':
+        setLeadActionOpen(true);
+        break;
       case 'log_call':
         handleOpenCallLog();
         break;
@@ -1421,6 +1455,8 @@ export default function LeadDetails() {
 
   const renderActionMenuIcon = (key) => {
     switch (key) {
+      case 'lead_action':
+        return <Whatshot sx={{ fontSize: 18, color: '#ea580c' }} />;
       case 'log_call':
         return <PhoneInTalk sx={{ fontSize: 16, color: '#0284c7' }} />;
       case 'schedule_followup':
@@ -1635,21 +1671,63 @@ export default function LeadDetails() {
               }}
             />
 
-            {/* Dynamic Temperature Chip for OPEN leads */}
-            {!isClosed && classification.badge && (
-              <Chip
-                label={`${classification.badge.label === 'Hot' ? '🔥' : classification.badge.label === 'Warm' ? '⚡' : '❄️'} ${classification.badge.label} (${classification.score}/100)`}
-                size="small"
-                sx={{
-                  fontWeight: 700,
-                  fontSize: 11,
-                  borderRadius: 1.5,
-                  bgcolor: classification.badge.bg,
-                  color: classification.badge.color,
-                  border: `1px solid ${classification.badge.border}`,
-                }}
-              />
-            )}
+            {/* Lead Temperature Chip */}
+            {(() => {
+              const rawTemp = lead.leadTemperature;
+              if (!rawTemp) {
+                return (
+                  <Chip
+                    label="Unclassified"
+                    size="small"
+                    clickable
+                    onClick={() => setLeadActionOpen(true)}
+                    title="Click to classify lead temperature"
+                    sx={{
+                      fontWeight: 600,
+                      fontSize: 11,
+                      borderRadius: 1.5,
+                      bgcolor: '#f1f5f9',
+                      color: '#64748b',
+                      border: '1px dashed #cbd5e1',
+                      cursor: 'pointer',
+                      '&:hover': {
+                        bgcolor: 'rgba(234, 88, 12, 0.08)',
+                        borderColor: '#ea580c',
+                        color: '#ea580c',
+                      },
+                    }}
+                  />
+                );
+              }
+
+              const norm = rawTemp.charAt(0).toUpperCase() + rawTemp.slice(1).toLowerCase();
+              const isHot = norm === 'Hot';
+              const isWarm = norm === 'Warm';
+              const isCold = norm === 'Cold';
+              const label = isHot ? '🔥 Hot' : isWarm ? '🟠 Warm' : isCold ? '❄️ Cold' : norm;
+              const color = isHot ? '#b91c1c' : isWarm ? '#c2410c' : isCold ? '#0369a1' : '#64748b';
+              const bg = isHot ? 'rgba(239, 68, 68, 0.12)' : isWarm ? 'rgba(234, 88, 12, 0.12)' : isCold ? 'rgba(2, 132, 199, 0.12)' : 'rgba(100, 116, 139, 0.12)';
+              const border = isHot ? 'rgba(239, 68, 68, 0.3)' : isWarm ? 'rgba(234, 88, 12, 0.3)' : isCold ? 'rgba(2, 132, 199, 0.3)' : 'rgba(100, 116, 139, 0.3)';
+
+              return (
+                <Chip
+                  label={label}
+                  size="small"
+                  clickable
+                  onClick={() => setLeadActionOpen(true)}
+                  title="Click to update classification"
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: 11,
+                    borderRadius: 1.5,
+                    bgcolor: bg,
+                    color: color,
+                    border: `1px solid ${border}`,
+                    cursor: 'pointer',
+                  }}
+                />
+              );
+            })()}
 
             {/* Overdue Alert Chip */}
             {isOverdue && (
@@ -1761,914 +1839,14 @@ export default function LeadDetails() {
 
       {error && <Alert severity="error" sx={{ mb: 3, borderRadius: 2 }}>{error}</Alert>}
 
-      {/* At-a-Glance Summary KPI Cards */}
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        {/* Card 1: Status & Latest Disposition */}
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            sx={{
-              p: 2.2,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                Status & Disposition
-              </Typography>
-              <Assessment sx={{ fontSize: 18, color: 'primary.main' }} />
-            </Box>
-            <Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
-                <Chip
-                  label={lead.latestDisposition || 'No Calls Yet'}
-                  size="small"
-                  sx={{
-                    fontWeight: 600,
-                    fontSize: 11,
-                    borderRadius: 1.5,
-                    bgcolor: dispStyle.bg,
-                    color: dispStyle.color,
-                    border: `1px solid ${dispStyle.border}`,
-                  }}
-                />
-              </Box>
-              <Typography variant="caption" color="text.secondary" display="block">
-                Last Call: {formatDateTime(lead.lastCalledAt)}
-              </Typography>
-            </Box>
-          </Paper>
-        </Grid>
 
-        {/* Card 2: Follow-up Details */}
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            sx={{
-              p: 2.2,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: followUpStatus.borderColor,
-              bgcolor: 'background.paper',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                Next Follow-up
-              </Typography>
-              <CalendarMonth sx={{ fontSize: 18, color: followUpStatus.color }} />
-            </Box>
-            <Box>
-              <Typography
-                variant="body2"
-                fontWeight={700}
-                sx={{
-                  color: followUpStatus.color,
-                  mb: 0.5,
-                  fontSize: 13,
-                }}
-              >
-                {lead.nextFollowUpAt ? formatDateTime(lead.nextFollowUpAt) : 'No Follow-up Scheduled'}
-              </Typography>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 0.75, flexWrap: 'wrap', gap: 0.5 }}>
-                <Chip
-                  label={followUpStatus.shortLabel}
-                  size="small"
-                  sx={{
-                    fontWeight: 600,
-                    fontSize: 10,
-                    height: 20,
-                    borderRadius: 1,
-                    bgcolor: followUpStatus.chipBg,
-                    color: followUpStatus.chipColor,
-                  }}
-                />
-                {lead.nextFollowUpAt && !isClosed && canEdit && (
-                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      color="success"
-                      startIcon={<CheckCircle sx={{ fontSize: 12 }} />}
-                      onClick={handleOpenCompleteFollowUp}
-                      sx={{
-                        fontSize: 11,
-                        textTransform: 'none',
-                        py: 0.2,
-                        px: 0.75,
-                        minWidth: 'auto',
-                        borderRadius: 1.5,
-                        fontWeight: 600,
-                        borderColor: 'rgba(16, 185, 129, 0.4)',
-                        color: '#059669',
-                        '&:hover': {
-                          bgcolor: 'rgba(16, 185, 129, 0.08)',
-                          borderColor: '#059669',
-                        },
-                      }}
-                    >
-                      Complete
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="text"
-                      startIcon={<Edit sx={{ fontSize: 11 }} />}
-                      onClick={handleOpenReschedule}
-                      sx={{
-                        fontSize: 11,
-                        textTransform: 'none',
-                        p: 0,
-                        minWidth: 'auto',
-                        color: 'primary.main',
-                        fontWeight: 600,
-                        '&:hover': { bgcolor: 'transparent', textDecoration: 'underline' },
-                      }}
-                    >
-                      Edit / Reschedule
-                    </Button>
-                  </Box>
-                )}
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-
-        {/* Card 3: Assignment / Owner */}
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            sx={{
-              p: 2.2,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                Assigned Owner
-              </Typography>
-              <AssignmentInd sx={{ fontSize: 18, color: 'primary.main' }} />
-            </Box>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-              <Avatar
-                sx={{
-                  width: 34,
-                  height: 34,
-                  fontSize: 14,
-                  fontWeight: 700,
-                  bgcolor: 'rgba(234, 88, 12, 0.12)',
-                  color: 'primary.main',
-                  border: '1px solid rgba(234, 88, 12, 0.25)',
-                }}
-              >
-                {ownerName.charAt(0).toUpperCase()}
-              </Avatar>
-              <Box>
-                <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
-                  {ownerName}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" display="block">
-                  {lead.currentOwner ? 'Active Agent' : 'Needs Assignment'}
-                </Typography>
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-
-        {/* Card 4: Primary Contact */}
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            sx={{
-              p: 2.2,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-              height: '100%',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'space-between',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                Primary Contact
-              </Typography>
-              <Person sx={{ fontSize: 18, color: 'primary.main' }} />
-            </Box>
-            <Box>
-              <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary', mb: 0.3 }}>
-                {primaryContact?.name || 'No Contact Person'}
-              </Typography>
-              {primaryContact?.phone ? (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Typography variant="body2" color="primary.main" fontWeight={500} sx={{ fontSize: 13 }}>
-                    {primaryContact.phone}
-                  </Typography>
-                  <Tooltip title={copiedPhone === primaryContact.phone ? 'Copied!' : 'Copy phone'}>
-                    <IconButton size="small" onClick={() => handleCopy(primaryContact.phone)} sx={{ p: 0.3, color: 'text.secondary' }}>
-                      {copiedPhone === primaryContact.phone ? <CheckIcon sx={{ fontSize: 14, color: 'success.main' }} /> : <ContentCopy sx={{ fontSize: 14 }} />}
-                    </IconButton>
-                  </Tooltip>
-                </Box>
-              ) : (
-                <Typography variant="caption" color="text.secondary">
-                  No phone available
-                </Typography>
-              )}
-            </Box>
-          </Paper>
-        </Grid>
-
-        {/* Card 5: Latest Walk-in (Requirement 5) */}
-        {lead.latestWalkIn?.walkInDate && (
-          <Grid item xs={12} sm={6} md={3}>
-            <Paper
-              elevation={0}
-              sx={{
-                p: 2.2,
-                borderRadius: 3,
-                border: '1px solid',
-                borderColor: 'rgba(5, 150, 105, 0.3)',
-                bgcolor: 'rgba(5, 150, 105, 0.02)',
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-              }}
-            >
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                  Latest Walk-in
-                </Typography>
-                <DirectionsWalk sx={{ fontSize: 18, color: '#059669' }} />
-              </Box>
-              <Box>
-                <Typography variant="body2" fontWeight={700} sx={{ color: '#059669', mb: 0.5, fontSize: 13 }}>
-                  {formatDate(lead.latestWalkIn.walkInDate)} • {lead.latestWalkIn.walkInTime}
-                </Typography>
-                <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {lead.latestWalkIn.remark || 'In-person visit'}
-                </Typography>
-                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
-                  {`Assigned to: ${lead.latestWalkIn.salesAgentName || 'Sales Agent'}${lead.latestWalkIn.assignedByName ? ` • Assigned by: ${lead.latestWalkIn.assignedByName}` : ''}`}
-                </Typography>
-              </Box>
-            </Paper>
-          </Grid>
-        )}
-
-        {/* Card 6: Latest Demo (Requirements 1, 6) */}
-        {lead.latestDemo?.demoDate && (
-          <Grid item xs={12} sm={6} md={3}>
-            <Paper
-              elevation={0}
-              sx={{
-                p: 2.2,
-                borderRadius: 3,
-                border: '1px solid',
-                borderColor: 'rgba(99, 102, 241, 0.3)',
-                bgcolor: 'rgba(99, 102, 241, 0.02)',
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-              }}
-            >
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                  Latest Demo
-                </Typography>
-                <LaptopMac sx={{ fontSize: 18, color: '#4f46e5' }} />
-              </Box>
-              <Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
-                  <Typography variant="body2" fontWeight={700} sx={{ color: '#4f46e5', fontSize: 13 }}>
-                    {formatDate(lead.latestDemo.demoDate)} • {lead.latestDemo.demoTime}
-                  </Typography>
-                  <Chip
-                    label={lead.latestDemo.status}
-                    size="small"
-                    sx={{
-                      fontWeight: 700,
-                      fontSize: 10,
-                      height: 20,
-                      ...getDemoStatusStyle(lead.latestDemo.status),
-                    }}
-                  />
-                </Box>
-                {lead.latestDemo.remarks && (
-                  <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {lead.latestDemo.remarks}
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
-                  {lead.latestDemo.updatedByName
-                    ? `Updated by: ${lead.latestDemo.updatedByName}`
-                    : `Assigned to: ${lead.latestDemo.salesAgentName || 'Sales Agent'}${lead.latestDemo.assignedByName ? ` • Assigned by: ${lead.latestDemo.assignedByName}` : ''}`}
-                </Typography>
-              </Box>
-            </Paper>
-          </Grid>
-        )}
-
-        {/* Card 6b: Latest Sales Follow-up */}
-        {lead.latestSalesFollowUp?.followUpDate && (
-          <Grid item xs={12} sm={6} md={3}>
-            <Paper
-              elevation={0}
-              sx={{
-                p: 2.2,
-                borderRadius: 3,
-                border: '1px solid',
-                borderColor: 'rgba(2, 132, 199, 0.3)',
-                bgcolor: 'rgba(2, 132, 199, 0.02)',
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-              }}
-            >
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                  Latest Sales Follow-up
-                </Typography>
-                <Schedule sx={{ fontSize: 18, color: '#0284c7' }} />
-              </Box>
-              <Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
-                  <Typography variant="body2" fontWeight={700} sx={{ color: '#0284c7', fontSize: 13 }}>
-                    {formatDate(lead.latestSalesFollowUp.followUpDate)} • {lead.latestSalesFollowUp.followUpTime || '11:00'}
-                  </Typography>
-                  <Chip
-                    label={lead.latestSalesFollowUp.status || 'Planned'}
-                    size="small"
-                    sx={{
-                      fontWeight: 700,
-                      fontSize: 10,
-                      height: 20,
-                      bgcolor: 'rgba(2, 132, 199, 0.12)',
-                      color: '#0284c7',
-                      border: '1px solid rgba(2, 132, 199, 0.3)',
-                    }}
-                  />
-                </Box>
-                {lead.latestSalesFollowUp.remarks && (
-                  <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {lead.latestSalesFollowUp.remarks}
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
-                  {`Assigned to: ${lead.latestSalesFollowUp.salesAgentName || 'Sales Agent'}${lead.latestSalesFollowUp.assignedByName ? ` • Assigned by: ${lead.latestSalesFollowUp.assignedByName}` : ''}`}
-                </Typography>
-              </Box>
-            </Paper>
-          </Grid>
-        )}
-
-        {/* Card 7: Outcome Details (when lead is WON or LOST) */}
-        {isClosed && (
-          <Grid item xs={12} sm={6} md={3}>
-            <Paper
-              elevation={0}
-              sx={{
-                p: 2.2,
-                borderRadius: 3,
-                border: '1px solid',
-                borderColor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)',
-                bgcolor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.04)' : 'rgba(239, 68, 68, 0.04)',
-                height: '100%',
-                display: 'flex',
-                flexDirection: 'column',
-                justifyContent: 'space-between',
-              }}
-            >
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
-                  Final Outcome
-                </Typography>
-                {lead.closureStatus === 'WON' ? (
-                  <CheckCircle sx={{ fontSize: 18, color: '#059669' }} />
-                ) : (
-                  <Cancel sx={{ fontSize: 18, color: '#dc2626' }} />
-                )}
-              </Box>
-              <Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
-                  <Chip
-                    icon={lead.closureStatus === 'WON' ? <EmojiEvents sx={{ fontSize: '13px !important' }} /> : <Cancel sx={{ fontSize: '13px !important' }} />}
-                    label={lead.closureStatus === 'WON' ? 'Closed Won' : 'Closed Lost'}
-                    size="small"
-                    sx={{
-                      fontWeight: 700,
-                      fontSize: 11,
-                      height: 22,
-                      bgcolor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                      color: lead.closureStatus === 'WON' ? '#059669' : '#dc2626',
-                      border: `1px solid ${lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-                    }}
-                  />
-                  {lead.dealValue && (
-                    <Typography variant="body2" fontWeight={700} sx={{ color: '#059669', fontSize: 13 }}>
-                      ₹{Number(lead.dealValue).toLocaleString()}
-                    </Typography>
-                  )}
-                  {lead.lostReason && (
-                    <Typography variant="caption" fontWeight={600} sx={{ color: '#dc2626' }}>
-                      Reason: {lead.lostReason}
-                    </Typography>
-                  )}
-                </Box>
-                {lead.closingRemark && (
-                  <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    "{lead.closingRemark}"
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
-                  Closed: {formatDate(lead.closedAt || lead.updatedAt)}{lead.closedBy?.fullName || lead.closedBy?.username ? ` • by ${lead.closedBy.fullName || lead.closedBy.username}` : ''}
-                </Typography>
-              </Box>
-            </Paper>
-          </Grid>
-        )}
-      </Grid>
-
-      {/* Lead Qualification & Temperature Scorecard */}
-      <Paper
-        elevation={0}
-        sx={{
-          p: { xs: 2, sm: 2.5 },
-          mb: 3,
-          borderRadius: 3,
-          border: '1px solid',
-          borderColor: isClosed
-            ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)')
-            : (classification.badge?.border || 'divider'),
-          bgcolor: isClosed
-            ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.03)' : 'rgba(239, 68, 68, 0.03)')
-            : (classification.badge?.bg ? `${classification.badge.bg.replace('0.12', '0.04')}` : 'background.paper'),
-        }}
-      >
-        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2, mb: 1.5 }}>
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-            <Box
-              sx={{
-                width: 44,
-                height: 44,
-                borderRadius: 2,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 22,
-                bgcolor: isClosed
-                  ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
-                  : classification.badge?.bg,
-                border: '1px solid',
-                borderColor: isClosed
-                  ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)')
-                  : classification.badge?.border,
-              }}
-            >
-              {isClosed ? (lead.closureStatus === 'WON' ? '🏆' : '🛑') : (classification.badge?.label === 'Hot' ? '🔥' : classification.badge?.label === 'Warm' ? '⚡' : '❄️')}
-            </Box>
-            <Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
-                  Lead Qualification Scorecard
-                </Typography>
-                <Chip
-                  label={isClosed ? (lead.closureStatus === 'WON' ? 'Closed Won' : 'Closed Lost') : classification.badge?.label}
-                  size="small"
-                  sx={{
-                    fontWeight: 700,
-                    fontSize: 11,
-                    height: 22,
-                    bgcolor: isClosed
-                      ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
-                      : classification.badge?.bg,
-                    color: isClosed
-                      ? (lead.closureStatus === 'WON' ? '#059669' : '#dc2626')
-                      : classification.badge?.color,
-                    border: `1px solid ${isClosed ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)') : classification.badge?.border}`,
-                  }}
-                />
-              </Box>
-              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
-                {isClosed ? (lead.closureStatus === 'WON' ? 'Deal successfully closed and marked Won • Revenue achieved' : 'Lead closed and marked Lost • Terminal state strictly preserved') : classification.indicator}
-              </Typography>
-            </Box>
-          </Box>
-          {!isClosed && classification.score !== null && (
-            <Box sx={{ textAlign: { xs: 'left', sm: 'right' } }}>
-              <Typography variant="h5" fontWeight={800} sx={{ color: classification.badge?.color, lineHeight: 1 }}>
-                {classification.score}<span style={{ fontSize: 14, fontWeight: 600, color: '#64748b' }}>/100</span>
-              </Typography>
-              <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mt: 0.5 }}>
-                Rule-Based Lead Score
-              </Typography>
-            </Box>
-          )}
-        </Box>
-
-        <Divider sx={{ my: 1.5, borderColor: 'divider' }} />
-
-        <Box>
-          <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 1 }}>
-            Classification & Scoring Rationale
-          </Typography>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
-            {classification.reasons.map((r, idx) => (
-              <Chip
-                key={idx}
-                label={r}
-                size="small"
-                variant="outlined"
-                sx={{
-                  fontSize: 12,
-                  py: 0.5,
-                  height: 'auto',
-                  borderRadius: 1.5,
-                  bgcolor: 'background.paper',
-                  borderColor: isClosed ? 'divider' : (r.startsWith('+') ? 'rgba(16, 185, 129, 0.4)' : r.startsWith('-') ? 'rgba(239, 68, 68, 0.4)' : 'divider'),
-                  color: r.startsWith('+') ? '#059669' : r.startsWith('-') ? '#dc2626' : 'text.primary',
-                  '& .MuiChip-label': { whiteSpace: 'normal', py: 0.5 }
-                }}
-              />
-            ))}
-          </Box>
-        </Box>
-      </Paper>
-
-      {/* Main Content Grid: Detailed Sections */}
-      <Grid container spacing={3}>
-        {/* LEFT COLUMN: Section 1 (Lead Info) & Section 2 (Contact Info) */}
-        <Grid item xs={12} lg={7}>
-          {/* Section 1: Lead Information */}
-          <Paper
-            elevation={0}
-            sx={{
-              p: 3,
-              mb: 3,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <Box
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 2,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    bgcolor: 'rgba(234, 88, 12, 0.12)',
-                    color: 'primary.main',
-                  }}
-                >
-                  <Business sx={{ fontSize: 18 }} />
-                </Box>
-                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
-                  Lead Information
-                </Typography>
-              </Box>
-
-              {isOwnerOrAdmin && !editMode && (
-                <Button
-                  size="small"
-                  startIcon={<Edit />}
-                  onClick={() => setEditMode(true)}
-                  sx={{
-                    textTransform: 'none',
-                    borderRadius: 2,
-                    fontSize: 12,
-                    color: 'text.secondary',
-                    '&:hover': { color: 'primary.main' },
-                  }}
-                >
-                  Edit Details
-                </Button>
-              )}
-            </Box>
-
-            <Grid container spacing={2.5}>
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Organization Name
-                </Typography>
-                {editMode ? (
-                  <TextField
-                    size="small"
-                    fullWidth
-                    value={editFields.organizationName}
-                    onChange={handleEditField('organizationName')}
-                    error={Boolean(fieldErrors.organizationName)}
-                    helperText={fieldErrors.organizationName}
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                  />
-                ) : (
-                  <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
-                    {lead.organizationName || '—'}
-                  </Typography>
-                )}
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Lead Number
-                </Typography>
-                <Typography variant="body2" fontWeight={600} sx={{ color: 'primary.main' }}>
-                  {lead.leadNumber || '—'}
-                </Typography>
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Industry
-                </Typography>
-                {editMode ? (
-                  <FormControl fullWidth size="small">
-                    <Select value={editFields.industry} onChange={handleEditField('industry')} sx={{ borderRadius: 2 }}>
-                      <MenuItem value="">Select Industry</MenuItem>
-                      {INDUSTRIES.map((i) => (
-                        <MenuItem key={i} value={i}>{i}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                ) : (
-                  <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                    {lead.industry || '—'}
-                  </Typography>
-                )}
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Organization Type
-                </Typography>
-                {editMode ? (
-                  <FormControl fullWidth size="small">
-                    <Select value={editFields.organizationType} onChange={handleEditField('organizationType')} sx={{ borderRadius: 2 }}>
-                      <MenuItem value="">Select Type</MenuItem>
-                      {ORGANIZATION_TYPES.map((t) => (
-                        <MenuItem key={t} value={t}>{t}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                ) : (
-                  <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                    {lead.organizationType || '—'}
-                  </Typography>
-                )}
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Lead Source
-                </Typography>
-                {editMode ? (
-                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-                    <FormControl fullWidth size="small" error={Boolean(fieldErrors.leadSource)}>
-                      <Select
-                        value={editFields.leadSourceDropdown || ''}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setEditFields((p) => ({
-                            ...p,
-                            leadSourceDropdown: val,
-                            ...(val !== 'Other' ? { customLeadSource: '' } : {}),
-                          }));
-                          if (fieldErrors.leadSource || fieldErrors.customLeadSource) {
-                            setFieldErrors((prev) => ({ ...prev, leadSource: undefined, customLeadSource: undefined }));
-                          }
-                        }}
-                        sx={{ borderRadius: 2 }}
-                      >
-                        <MenuItem value="">Select Source</MenuItem>
-                        {LEAD_SOURCES.map((s) => (
-                          <MenuItem key={s} value={s}>{s}</MenuItem>
-                        ))}
-                      </Select>
-                      {fieldErrors.leadSource && (
-                        <Typography variant="caption" color="error" sx={{ mt: 0.5, ml: 1.5 }}>
-                          {fieldErrors.leadSource}
-                        </Typography>
-                      )}
-                    </FormControl>
-                    {editFields.leadSourceDropdown === 'Other' && (
-                      <TextField
-                        size="small"
-                        fullWidth
-                        required
-                        label="Please specify source"
-                        placeholder="Please specify source"
-                        value={editFields.customLeadSource || ''}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setEditFields((p) => ({ ...p, customLeadSource: val }));
-                          if (fieldErrors.customLeadSource) {
-                            setFieldErrors((prev) => ({ ...prev, customLeadSource: undefined }));
-                          }
-                        }}
-                        error={Boolean(fieldErrors.customLeadSource)}
-                        helperText={fieldErrors.customLeadSource}
-                        sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                      />
-                    )}
-                  </Box>
-                ) : (
-                  <Chip
-                    label={lead.leadSource || 'Unknown'}
-                    size="small"
-                    sx={{
-                      borderRadius: 1.5,
-                      fontWeight: 500,
-                      bgcolor: '#f1f5f9',
-                      border: '1px solid',
-                      borderColor: 'divider',
-                    }}
-                  />
-                )}
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Software Used
-                </Typography>
-                {editMode ? (
-                  <FormControl fullWidth size="small">
-                    <Select
-                      value={editFields.existingSoftwareUsed || ''}
-                      onChange={(e) => setEditFields((p) => ({ ...p, existingSoftwareUsed: e.target.value }))}
-                      sx={{ borderRadius: 2 }}
-                    >
-                      {['', 'Yes', 'No', 'Unknown'].map((o) => (
-                        <MenuItem key={o} value={o}>{o || 'Select option'}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                ) : (
-                  <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                    {lead.existingSoftwareUsed ? `${lead.existingSoftwareUsed}${lead.softwareName ? ` (${lead.softwareName})` : ''}` : '—'}
-                  </Typography>
-                )}
-              </Grid>
-
-              {editMode && editFields.existingSoftwareUsed === 'Yes' && (
-                <Grid item xs={12}>
-                  <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                    Software Name
-                  </Typography>
-                  <TextField
-                    size="small"
-                    fullWidth
-                    placeholder="Enter existing software name"
-                    value={editFields.softwareName || ''}
-                    onChange={(e) => setEditFields((p) => ({ ...p, softwareName: e.target.value }))}
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                  />
-                </Grid>
-              )}
-
-              <Grid item xs={12}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Address
-                </Typography>
-                {editMode ? (
-                  <TextField
-                    size="small"
-                    fullWidth
-                    multiline
-                    rows={2}
-                    placeholder="Full address"
-                    value={editFields.address}
-                    onChange={handleEditField('address')}
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                  />
-                ) : (
-                  <Typography variant="body2" sx={{ color: 'text.secondary', lineHeight: 1.5 }}>
-                    {lead.address || '—'}
-                  </Typography>
-                )}
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Verified Hospital Latitude
-                </Typography>
-                {editMode ? (
-                  <TextField
-                    size="small"
-                    fullWidth
-                    placeholder="e.g. 12.971598"
-                    value={editFields.hospitalLatitude}
-                    onChange={handleEditField('hospitalLatitude')}
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                  />
-                ) : (
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
-                    {lead.hospitalCoordinates?.latitude != null ? lead.hospitalCoordinates.latitude.toFixed(6) : 'Not recorded'}
-                  </Typography>
-                )}
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Verified Hospital Longitude
-                </Typography>
-                {editMode ? (
-                  <TextField
-                    size="small"
-                    fullWidth
-                    placeholder="e.g. 77.594562"
-                    value={editFields.hospitalLongitude}
-                    onChange={handleEditField('hospitalLongitude')}
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                  />
-                ) : (
-                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
-                    {lead.hospitalCoordinates?.longitude != null ? lead.hospitalCoordinates.longitude.toFixed(6) : 'Not recorded'}
-                  </Typography>
-                )}
-              </Grid>
-
-              <Grid item xs={12}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
-                  Remarks
-                </Typography>
-                {editMode ? (
-                  <TextField
-                    size="small"
-                    fullWidth
-                    multiline
-                    rows={2}
-                    placeholder="Remarks / notes"
-                    value={editFields.remarks || ''}
-                    onChange={handleEditField('remarks')}
-                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-                  />
-                ) : (
-                  <Typography variant="body2" sx={{ color: 'text.secondary', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-                    {lead.remarks || lead.sourceRemarks || lead.latestRemark || '—'}
-                  </Typography>
-                )}
-              </Grid>
-            </Grid>
-
-            {editMode && (
-              <Box sx={{ mt: 3, pt: 2, borderTop: '1px solid', borderColor: 'divider', display: 'flex', gap: 1.5, justifyContent: 'flex-end' }}>
-                <Button
-                  variant="outlined"
-                  size="small"
-                  onClick={() => {
-                    resetEditFields(lead);
-                    setFieldErrors({});
-                    setEditMode(false);
-                  }}
-                  sx={{ borderRadius: 2, textTransform: 'none', borderColor: 'divider', color: 'text.secondary' }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="contained"
-                  size="small"
-                  onClick={handleSaveEdit}
-                  sx={{
-                    borderRadius: 2,
-                    textTransform: 'none',
-                    bgcolor: 'primary.main',
-                    color: '#ffffff',
-                    boxShadow: '0 2px 8px rgba(234, 88, 12, 0.25)',
-                    '&:hover': { bgcolor: 'primary.dark' },
-                  }}
-                >
-                  Save Changes
-                </Button>
-              </Box>
-            )}
-          </Paper>
-
+      {/* ============================================================== */}
+      {/* MAIN CONTENT GRID: Left Column & Right Column                  */}
+      {/* ============================================================== */}
+      <Grid container spacing={3} sx={{ mb: 3 }}>
+        {/* LEFT COLUMN: Contact Info -> Activity & Call History -> Lead Info */}
+        <Grid item xs={12} lg={7.5} xl={8}>
+          {/* Section 2: Contact Information (Prominently Displayed with Subtle Green Theme) */}
           {/* Section 2: Contact Information */}
           <Paper
             elevation={0}
@@ -2677,8 +1855,9 @@ export default function LeadDetails() {
               mb: 3,
               borderRadius: 3,
               border: '1px solid',
-              borderColor: 'divider',
+              borderColor: 'rgba(16, 185, 129, 0.35)',
               bgcolor: 'background.paper',
+              boxShadow: '0 1px 3px 0 rgba(16, 185, 129, 0.05)',
             }}
           >
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
@@ -2691,11 +1870,11 @@ export default function LeadDetails() {
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    bgcolor: 'rgba(234, 88, 12, 0.12)',
-                    color: 'primary.main',
+                    bgcolor: 'rgba(16, 185, 129, 0.12)',
+                    color: '#059669',
                   }}
                 >
-                  <People sx={{ fontSize: 18 }} />
+                  <People sx={{ fontSize: 18, color: '#059669' }} />
                 </Box>
                 <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
                   Contact Information ({contacts.length})
@@ -2712,9 +1891,9 @@ export default function LeadDetails() {
                     borderRadius: 2,
                     textTransform: 'none',
                     fontSize: 12,
-                    borderColor: 'divider',
-                    color: 'primary.main',
-                    '&:hover': { borderColor: 'primary.main', bgcolor: 'rgba(234, 88, 12, 0.08)' },
+                    borderColor: 'rgba(16, 185, 129, 0.5)',
+                    color: '#059669',
+                    '&:hover': { borderColor: '#059669', bgcolor: 'rgba(16, 185, 129, 0.08)' },
                   }}
                 >
                   Add Contact
@@ -2740,12 +1919,12 @@ export default function LeadDetails() {
                           p: 2.2,
                           borderRadius: 2.5,
                           border: '1px solid',
-                          borderColor: isPrim ? 'rgba(234, 88, 12, 0.4)' : 'divider',
-                          bgcolor: isPrim ? 'rgba(234, 88, 12, 0.04)' : '#ffffff',
+                          borderColor: isPrim ? 'rgba(16, 185, 129, 0.5)' : 'divider',
+                          bgcolor: isPrim ? 'rgba(16, 185, 129, 0.04)' : '#ffffff',
                           position: 'relative',
                           transition: 'all 0.2s',
                           '&:hover': {
-                            borderColor: isPrim ? 'primary.main' : '#cbd5e1',
+                            borderColor: isPrim ? '#059669' : '#cbd5e1',
                           },
                         }}
                       >
@@ -2763,7 +1942,7 @@ export default function LeadDetails() {
                                   height: 20,
                                   fontSize: 10,
                                   fontWeight: 700,
-                                  bgcolor: 'primary.main',
+                                  bgcolor: '#059669',
                                   color: '#ffffff',
                                   borderRadius: 1,
                                 }}
@@ -2778,7 +1957,7 @@ export default function LeadDetails() {
 
                         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, mb: 1.5 }}>
                           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Phone sx={{ fontSize: 14, color: 'primary.main' }} />
+                            <Phone sx={{ fontSize: 14, color: '#059669' }} />
                             <Typography variant="body2" sx={{ fontSize: 13, color: 'text.primary' }}>
                               {contact.phone}
                             </Typography>
@@ -2824,7 +2003,7 @@ export default function LeadDetails() {
                                 size="small"
                                 variant="text"
                                 onClick={() => handleSetPrimary(contact._id)}
-                                sx={{ fontSize: 11, textTransform: 'none', color: 'primary.main', p: 0.5 }}
+                                sx={{ fontSize: 11, textTransform: 'none', color: '#059669', p: 0.5 }}
                               >
                                 Set as Primary
                               </Button>
@@ -2838,820 +2017,9 @@ export default function LeadDetails() {
               </Grid>
             )}
           </Paper>
-        </Grid>
 
-        {/* RIGHT COLUMN: Section 3 (Assignment/Owner), Section 4 (Status & Disposition), Section 5 (Follow-up) */}
-        <Grid item xs={12} lg={5}>
-          {/* Section 3: Assignment & Owner */}
-          <Paper
-            elevation={0}
-            sx={{
-              p: 3,
-              mb: 3,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <Box
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 2,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    bgcolor: 'rgba(234, 88, 12, 0.12)',
-                    color: 'primary.main',
-                  }}
-                >
-                  <AssignmentInd sx={{ fontSize: 18 }} />
-                </Box>
-                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
-                  Assignment & Ownership
-                </Typography>
-              </Box>
-
-              {canEdit && (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<SwapHoriz sx={{ fontSize: 14 }} />}
-                  onClick={handleOpenTransfer}
-                  sx={{
-                    borderRadius: 2,
-                    textTransform: 'none',
-                    fontSize: 11,
-                    borderColor: 'divider',
-                    color: 'primary.main',
-                    '&:hover': { borderColor: 'primary.main' },
-                  }}
-                >
-                  Reassign
-                </Button>
-              )}
-            </Box>
-
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              {/* Current Owner Prominent Display */}
-              <Paper
-                variant="outlined"
-                sx={{
-                  p: 2,
-                  borderRadius: 2.5,
-                  bgcolor: 'rgba(234, 88, 12, 0.04)',
-                  borderColor: 'rgba(234, 88, 12, 0.3)',
-                }}
-              >
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                  <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                    Current Owner (Active)
-                  </Typography>
-                  <Chip
-                    label="Active Owner"
-                    size="small"
-                    sx={{
-                      height: 20,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      bgcolor: 'primary.main',
-                      color: '#ffffff',
-                      borderRadius: 1,
-                    }}
-                  />
-                </Box>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                  <Avatar
-                    sx={{
-                      width: 36,
-                      height: 36,
-                      fontSize: 14,
-                      fontWeight: 700,
-                      bgcolor: 'primary.main',
-                      color: '#ffffff',
-                    }}
-                  >
-                    {ownerName.charAt(0).toUpperCase()}
-                  </Avatar>
-                  <Box sx={{ flexGrow: 1 }}>
-                    <Typography variant="subtitle2" fontWeight={700} sx={{ color: 'text.primary' }}>
-                      {ownerName}
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      {lead.currentOwner?.email || (lead.currentOwner?.username ? `@${lead.currentOwner.username}` : 'No email')}
-                    </Typography>
-                  </Box>
-                  <Chip
-                    label={lead.currentOwner?.agentRole || lead.currentOwner?.role || 'Agent'}
-                    size="small"
-                    variant="outlined"
-                    sx={{ borderRadius: 1.5, fontSize: 11, fontWeight: 600 }}
-                  />
-                </Box>
-              </Paper>
-
-              {/* Ownership Chain Summary */}
-              {ownershipChain.length > 1 && (
-                <Box sx={{ p: 1.75, borderRadius: 2, bgcolor: '#f8fafc', border: '1px solid #e2e8f0' }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-                    <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                      Ownership Chain ({ownershipChain.length} stages)
-                    </Typography>
-                    <Button
-                      size="small"
-                      variant="text"
-                      onClick={() => setHistoryTab(2)}
-                      sx={{ p: 0, minWidth: 'auto', fontSize: 11, textTransform: 'none', color: 'primary.main', fontWeight: 600 }}
-                    >
-                      View Details →
-                    </Button>
-                  </Box>
-                  <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.75 }}>
-                    {ownershipChain.map((step, idx) => {
-                      const name = step.newOwner?.fullName || step.newOwnerName || step.newOwner?.username || 'Agent';
-                      const isLast = idx === ownershipChain.length - 1;
-                      return (
-                        <React.Fragment key={`chain-chip-${idx}`}>
-                          <Chip
-                            size="small"
-                            label={`${idx === 0 ? 'First: ' : ''}${name}${isLast ? ' (Current)' : ''}`}
-                            color={isLast ? 'primary' : 'default'}
-                            variant={isLast ? 'filled' : 'outlined'}
-                            sx={{
-                              fontSize: 11,
-                              fontWeight: isLast ? 700 : 500,
-                              borderRadius: 1.5,
-                              ...(isLast ? { bgcolor: 'primary.main', color: '#ffffff' } : { bgcolor: '#ffffff' }),
-                            }}
-                          />
-                          {!isLast && <ArrowForward sx={{ fontSize: 12, color: '#94a3b8' }} />}
-                        </React.Fragment>
-                      );
-                    })}
-                  </Box>
-                </Box>
-              )}
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Created By
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                  {lead.createdBy?.fullName || lead.createdBy?.username || 'System'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Created Date
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                  {formatDateTime(lead.createdAt)}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Last Updated
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                  {formatDateTime(lead.updatedAt)}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Last Updated By
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.primary', fontWeight: 600 }}>
-                  {lead.updatedBy?.fullName || lead.updatedBy?.username || lead.updatedByName || lead.createdBy?.fullName || lead.createdBy?.username || '—'}
-                </Typography>
-              </Box>
-            </Box>
-          </Paper>
-
-          {/* Section: Lead Created Location & Device */}
-          <Paper
-            elevation={0}
-            sx={{
-              p: 3,
-              mb: 3,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <Box
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 2,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    bgcolor: 'rgba(37, 99, 235, 0.1)',
-                    color: '#2563eb',
-                  }}
-                >
-                  <MyLocation sx={{ fontSize: 18 }} />
-                </Box>
-                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
-                  Lead Created Location & Device
-                </Typography>
-              </Box>
-
-              <Chip
-                size="small"
-                label={lead.createdLocation?.status || 'Not recorded'}
-                sx={{
-                  fontWeight: 700,
-                  fontSize: 11,
-                  borderRadius: 1.5,
-                  bgcolor:
-                    lead.createdLocation?.status === 'Captured'
-                      ? 'rgba(16, 185, 129, 0.12)'
-                      : lead.createdLocation?.status === 'Permission Denied'
-                      ? 'rgba(245, 158, 11, 0.12)'
-                      : 'rgba(148, 163, 184, 0.15)',
-                  color:
-                    lead.createdLocation?.status === 'Captured'
-                      ? '#059669'
-                      : lead.createdLocation?.status === 'Permission Denied'
-                      ? '#d97706'
-                      : '#64748b',
-                  border: '1px solid',
-                  borderColor:
-                    lead.createdLocation?.status === 'Captured'
-                      ? 'rgba(16, 185, 129, 0.3)'
-                      : lead.createdLocation?.status === 'Permission Denied'
-                      ? 'rgba(245, 158, 11, 0.3)'
-                      : 'rgba(148, 163, 184, 0.3)',
-                }}
-              />
-            </Box>
-
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.75 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Creator (Agent)
-                </Typography>
-                <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
-                  {lead.createdBy?.fullName || lead.createdBy?.username || lead.createdByName || 'Not recorded'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Verified Hospital Coordinates
-                </Typography>
-                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
-                  {lead.hospitalCoordinates?.latitude != null && lead.hospitalCoordinates?.longitude != null
-                    ? `${lead.hospitalCoordinates.latitude.toFixed(6)}, ${lead.hospitalCoordinates.longitude.toFixed(6)}`
-                    : 'Not recorded'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Geofence Result & Distance
-                </Typography>
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  <Chip
-                    size="small"
-                    label={lead.createdLocation?.geofenceStatus || 'Not Verified'}
-                    sx={{
-                      height: 20,
-                      fontSize: 10,
-                      fontWeight: 700,
-                      bgcolor: lead.createdLocation?.geofenceStatus === 'Passed' ? 'rgba(16, 185, 129, 0.12)' : (lead.createdLocation?.geofenceStatus === 'Failed' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)'),
-                      color: lead.createdLocation?.geofenceStatus === 'Passed' ? '#059669' : (lead.createdLocation?.geofenceStatus === 'Failed' ? '#dc2626' : '#2563eb'),
-                    }}
-                  />
-                  {lead.createdLocation?.distanceMetres != null && (
-                    <Typography variant="caption" fontWeight={600} color="text.secondary">
-                      ({Math.round(lead.createdLocation.distanceMetres)}m from hospital)
-                    </Typography>
-                  )}
-                </Box>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Creation Timestamp
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                  {lead.createdLocation?.capturedAt
-                    ? formatDateTime(lead.createdLocation.capturedAt)
-                    : lead.createdAt
-                    ? formatDateTime(lead.createdAt)
-                    : 'Not recorded'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Location Status
-                </Typography>
-                <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
-                  {lead.createdLocation?.status || 'Not recorded'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  GPS Coordinates
-                </Typography>
-                {lead.createdLocation?.latitude !== null && lead.createdLocation?.latitude !== undefined &&
-                 lead.createdLocation?.longitude !== null && lead.createdLocation?.longitude !== undefined ? (
-                  <Box sx={{ textAlign: 'right' }}>
-                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
-                      {lead.createdLocation.latitude.toFixed(6)}, {lead.createdLocation.longitude.toFixed(6)}
-                    </Typography>
-                    {lead.createdLocation.accuracy !== null && lead.createdLocation.accuracy !== undefined && (
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
-                        Accuracy: ±{lead.createdLocation.accuracy}m
-                      </Typography>
-                    )}
-                    <Link
-                      href={`https://www.google.com/maps?q=${lead.createdLocation.latitude},${lead.createdLocation.longitude}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      sx={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: 0.5,
-                        fontSize: 12,
-                        fontWeight: 600,
-                        color: '#2563eb',
-                        mt: 0.5,
-                        textDecoration: 'none',
-                        '&:hover': { textDecoration: 'underline' },
-                      }}
-                    >
-                      Open in Maps <OpenInNew sx={{ fontSize: 12 }} />
-                    </Link>
-                  </Box>
-                ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    Not recorded
-                  </Typography>
-                )}
-              </Box>
-
-              {/* Device Name */}
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Device Name
-                </Typography>
-                {lead.createdDeviceName ? (
-                  <Chip
-                    size="small"
-                    label={lead.createdDeviceName}
-                    sx={{
-                      height: 22,
-                      fontSize: 11,
-                      fontWeight: 600,
-                      bgcolor: '#f1f5f9',
-                      color: '#334155',
-                      border: '1px solid #cbd5e1',
-                      borderRadius: 1.5,
-                    }}
-                  />
-                ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    Not recorded
-                  </Typography>
-                )}
-              </Box>
-
-              {/* Device Installation ID */}
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5, flexWrap: 'wrap', gap: 1 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Device Installation ID
-                </Typography>
-                {lead.createdDeviceInstallationId ? (
-                  <Box
-                    sx={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 0.5,
-                      bgcolor: '#f1f5f9',
-                      px: 1,
-                      py: 0.25,
-                      borderRadius: 1.5,
-                      border: '1px solid #cbd5e1',
-                      maxWidth: '100%',
-                    }}
-                  >
-                    <Typography
-                      variant="caption"
-                      sx={{
-                        fontFamily: 'monospace',
-                        fontWeight: 600,
-                        color: '#475569',
-                        fontSize: 11,
-                        wordBreak: 'break-all',
-                      }}
-                    >
-                      {String(lead.createdDeviceInstallationId)}
-                    </Typography>
-                    <Tooltip title={copiedCreatedDevId ? 'Copied ID!' : 'Copy Device ID'}>
-                      <IconButton
-                        size="small"
-                        onClick={() => handleCopyCreatedDevId(String(lead.createdDeviceInstallationId))}
-                        sx={{
-                          p: 0.25,
-                          color: copiedCreatedDevId ? '#059669' : '#64748b',
-                          '&:hover': { bgcolor: 'rgba(0,0,0,0.05)' },
-                        }}
-                      >
-                        {copiedCreatedDevId ? <CheckIcon sx={{ fontSize: 13, color: '#059669' }} /> : <ContentCopy sx={{ fontSize: 13 }} />}
-                      </IconButton>
-                    </Tooltip>
-                  </Box>
-                ) : (
-                  <Typography variant="body2" color="text.secondary">
-                    Not recorded
-                  </Typography>
-                )}
-              </Box>
-
-              {/* Visit Live Camera Photo */}
-              {lead.visitPhoto?.url && (
-                <Box sx={{ mt: 2, p: 2, bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0' }}>
-                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
-                    <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a', display: 'flex', alignItems: 'center', gap: 0.75 }}>
-                      <PhotoCamera sx={{ fontSize: 16, color: '#059669' }} /> Live Visit Camera Photo
-                    </Typography>
-                    <Chip
-                      size="small"
-                      label="Live Captured"
-                      sx={{
-                        height: 20,
-                        fontSize: 10,
-                        fontWeight: 700,
-                        bgcolor: 'rgba(16, 185, 129, 0.12)',
-                        color: '#059669',
-                      }}
-                    />
-                  </Box>
-                  <Box
-                    component="img"
-                    src={lead.visitPhoto.url}
-                    alt="Lead visit verification"
-                    sx={{
-                      width: '100%',
-                      maxHeight: 240,
-                      objectFit: 'cover',
-                      borderRadius: 1.5,
-                      border: '1px solid #cbd5e1',
-                      cursor: 'pointer',
-                      bgcolor: '#000',
-                    }}
-                    onClick={() => window.open(lead.visitPhoto.url, '_blank')}
-                  />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 1, flexWrap: 'wrap', gap: 1 }}>
-                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
-                      Captured: {lead.visitPhoto.capturedAt ? formatDateTime(lead.visitPhoto.capturedAt) : 'At lead creation'}
-                      {lead.visitPhoto.capturedByName ? ` by ${lead.visitPhoto.capturedByName}` : ''}
-                    </Typography>
-                    <Link
-                      href={lead.visitPhoto.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      sx={{ fontSize: 11, fontWeight: 600, color: '#2563eb', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 0.5 }}
-                    >
-                      View Full Size <OpenInNew sx={{ fontSize: 11 }} />
-                    </Link>
-                  </Box>
-                </Box>
-              )}
-            </Box>
-
-            <Divider sx={{ my: 2 }} />
-
-            <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: 11, fontStyle: 'italic', display: 'block' }}>
-              * Initial GPS location and browser device installation ID captured at lead creation time. Kept separate from the registered hospital address and subsequent field visit records.
-            </Typography>
-          </Paper>
-
-          {/* Section 4: Current Status & Latest Disposition */}
-          <Paper
-            elevation={0}
-            sx={{
-              p: 3,
-              mb: 3,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'divider',
-              bgcolor: 'background.paper',
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2.5 }}>
-              <Box
-                sx={{
-                  width: 32,
-                  height: 32,
-                  borderRadius: 2,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  bgcolor: 'rgba(234, 88, 12, 0.12)',
-                  color: 'primary.main',
-                }}
-              >
-                <Assessment sx={{ fontSize: 18 }} />
-              </Box>
-              <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
-                Current Status & Disposition
-              </Typography>
-            </Box>
-
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Lead Lifecycle Status
-                </Typography>
-                <Chip
-                  label={lead.closureStatus}
-                  size="small"
-                  sx={{
-                    fontWeight: 700,
-                    fontSize: 11,
-                    borderRadius: 1.5,
-                    bgcolor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : lead.closureStatus === 'LOST' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(234, 88, 12, 0.12)',
-                    color: lead.closureStatus === 'WON' ? 'success.main' : lead.closureStatus === 'LOST' ? 'error.main' : 'primary.main',
-                    border: '1px solid',
-                    borderColor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : lead.closureStatus === 'LOST' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(234, 88, 12, 0.3)',
-                  }}
-                />
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Latest Call Disposition
-                </Typography>
-                <Chip
-                  label={lead.latestDisposition || 'None'}
-                  size="small"
-                  sx={{
-                    fontWeight: 600,
-                    fontSize: 11,
-                    borderRadius: 1.5,
-                    bgcolor: dispStyle.bg,
-                    color: dispStyle.color,
-                    border: `1px solid ${dispStyle.border}`,
-                  }}
-                />
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Last Contacted
-                </Typography>
-                <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                  {formatDateTime(lead.lastCalledAt)}
-                </Typography>
-              </Box>
-
-              {isClosed && (
-                <>
-                  <Divider sx={{ borderColor: 'divider' }} />
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                    <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                      Closed By
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                      {lead.closedBy?.fullName || lead.closedBy?.username || '—'}
-                    </Typography>
-                  </Box>
-
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                    <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                      Closed Date
-                    </Typography>
-                    <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                      {formatDateTime(lead.closedAt)}
-                    </Typography>
-                  </Box>
-
-                  {lead.closingRemark && (
-                    <Box sx={{ py: 0.5 }}>
-                      <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.3 }}>
-                        Closing Remark
-                      </Typography>
-                      <Typography variant="body2" sx={{ color: 'text.primary', fontStyle: 'italic' }}>
-                        "{lead.closingRemark}"
-                      </Typography>
-                    </Box>
-                  )}
-
-                  {lead.closureStatus === 'WON' && (
-                    <>
-                      {lead.dealValue && (
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                          <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                            Deal Value
-                          </Typography>
-                          <Typography variant="body2" fontWeight={700} sx={{ color: 'success.main' }}>
-                            ₹{Number(lead.dealValue).toLocaleString('en-IN')}
-                          </Typography>
-                        </Box>
-                      )}
-                      {lead.product && (
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                          <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                            Product
-                          </Typography>
-                          <Typography variant="body2" sx={{ color: 'text.primary' }}>
-                            {lead.product}
-                          </Typography>
-                        </Box>
-                      )}
-                    </>
-                  )}
-
-                  {lead.closureStatus === 'LOST' && lead.lostReason && (
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                      <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                        Lost Reason
-                      </Typography>
-                      <Chip
-                        label={lead.lostReason}
-                        size="small"
-                        sx={{
-                          fontWeight: 500,
-                          fontSize: 11,
-                          bgcolor: 'rgba(239, 68, 68, 0.1)',
-                          color: '#ef4444',
-                          border: '1px solid rgba(239, 68, 68, 0.2)',
-                          borderRadius: 1,
-                        }}
-                      />
-                    </Box>
-                  )}
-                </>
-              )}
-
-              {canEdit && (
-                <Box sx={{ mt: 1, pt: 1.5, borderTop: '1px solid', borderColor: 'divider', display: 'flex', gap: 1 }}>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    color="success"
-                    startIcon={<CheckCircle sx={{ fontSize: 14 }} />}
-                    onClick={() => { setCloseMode('won'); setCloseOpen(true); }}
-                    fullWidth
-                    sx={{ borderRadius: 2, textTransform: 'none', fontSize: 12 }}
-                  >
-                    Close as Won
-                  </Button>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    color="error"
-                    startIcon={<Cancel sx={{ fontSize: 14 }} />}
-                    onClick={() => { setCloseMode('lost'); setCloseOpen(true); }}
-                    fullWidth
-                    sx={{ borderRadius: 2, textTransform: 'none', fontSize: 12 }}
-                  >
-                    Close as Lost
-                  </Button>
-                </Box>
-              )}
-            </Box>
-          </Paper>
-
-          {/* Section 5: Follow-up Details */}
-          <Paper
-            elevation={0}
-            sx={{
-              p: 3,
-              mb: 3,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: followUpStatus.borderColor,
-              bgcolor: 'background.paper',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <Box
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 2,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    bgcolor: isOverdue ? 'rgba(239, 68, 68, 0.12)' : isDueToday ? 'rgba(245, 158, 11, 0.12)' : 'rgba(234, 88, 12, 0.12)',
-                    color: followUpStatus.color,
-                  }}
-                >
-                  <CalendarMonth sx={{ fontSize: 18 }} />
-                </Box>
-                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
-                  Follow-up Details
-                </Typography>
-              </Box>
-
-              {canEdit && (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                  {lead.nextFollowUpAt && !isClosed && (
-                    <Button
-                      size="small"
-                      variant="contained"
-                      color="success"
-                      startIcon={<CheckCircle sx={{ fontSize: 12 }} />}
-                      onClick={handleOpenCompleteFollowUp}
-                      sx={{
-                        borderRadius: 2,
-                        textTransform: 'none',
-                        fontSize: 11,
-                        bgcolor: '#059669',
-                        color: '#ffffff',
-                        boxShadow: '0 2px 6px rgba(5, 150, 105, 0.25)',
-                        '&:hover': { bgcolor: '#047857' },
-                      }}
-                    >
-                      Complete
-                    </Button>
-                  )}
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={lead.nextFollowUpAt ? <Edit sx={{ fontSize: 12 }} /> : <Schedule sx={{ fontSize: 12 }} />}
-                    onClick={lead.nextFollowUpAt ? handleOpenReschedule : handleOpenCallLog}
-                    sx={{
-                      borderRadius: 2,
-                      textTransform: 'none',
-                      fontSize: 11,
-                      borderColor: 'divider',
-                      color: 'primary.main',
-                      '&:hover': { borderColor: 'primary.main' },
-                    }}
-                  >
-                    {lead.nextFollowUpAt ? 'Reschedule' : 'Set Follow-up'}
-                  </Button>
-                </Box>
-              )}
-            </Box>
-
-            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Next Follow-up
-                </Typography>
-                <Typography
-                  variant="body2"
-                  fontWeight={600}
-                  sx={{ color: followUpStatus.color }}
-                >
-                  {lead.nextFollowUpAt ? formatDateTime(lead.nextFollowUpAt) : 'No follow-up set'}
-                </Typography>
-              </Box>
-
-              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
-                <Typography variant="caption" color="text.secondary" fontWeight={500}>
-                  Follow-up Status
-                </Typography>
-                <Chip
-                  label={followUpStatus.shortLabel}
-                  size="small"
-                  sx={{
-                    fontWeight: 600,
-                    fontSize: 11,
-                    borderRadius: 1.5,
-                    bgcolor: followUpStatus.chipBg,
-                    color: followUpStatus.chipColor,
-                    border: '1px solid',
-                    borderColor: followUpStatus.borderColor,
-                  }}
-                />
-              </Box>
-
-              {logs.length > 0 && logs[0].followUpAt && (
-                <Box sx={{ pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
-                  <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.3 }}>
-                    Last Scheduled Note
-                  </Typography>
-                  <Typography variant="body2" sx={{ color: 'text.secondary', fontSize: 13, fontStyle: 'italic' }}>
-                    "{logs[0].remark}"
-                  </Typography>
-                </Box>
-              )}
-            </Box>
-          </Paper>
-        </Grid>
-
-        {/* FULL WIDTH: Section 6 (Activity & Call History) */}
-        <Grid item xs={12}>
+          {/* Section 6: Activity & Call History (Positioned Directly Below Contact Information) */}
+          <Box sx={{ mb: 3 }}>
           <Paper
             elevation={0}
             sx={{
@@ -4910,8 +3278,1387 @@ export default function LeadDetails() {
               )}
             </Box>
           </Paper>
+          </Box>
+
+          {/* Section 1: Lead Information */}
+          {/* Section 1: Lead Information */}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'rgba(234, 88, 12, 0.12)',
+                    color: 'primary.main',
+                  }}
+                >
+                  <Business sx={{ fontSize: 18 }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
+                  Lead Information
+                </Typography>
+              </Box>
+
+              {isOwnerOrAdmin && !editMode && (
+                <Button
+                  size="small"
+                  startIcon={<Edit />}
+                  onClick={() => setEditMode(true)}
+                  sx={{
+                    textTransform: 'none',
+                    borderRadius: 2,
+                    fontSize: 12,
+                    color: 'text.secondary',
+                    '&:hover': { color: 'primary.main' },
+                  }}
+                >
+                  Edit Details
+                </Button>
+              )}
+            </Box>
+
+            <Grid container spacing={2.5}>
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Organization Name
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    value={editFields.organizationName}
+                    onChange={handleEditField('organizationName')}
+                    error={Boolean(fieldErrors.organizationName)}
+                    helperText={fieldErrors.organizationName}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" fontWeight={600} sx={{ color: 'text.primary' }}>
+                    {lead.organizationName || '—'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Lead Number
+                </Typography>
+                <Typography variant="body2" fontWeight={600} sx={{ color: 'primary.main' }}>
+                  {lead.leadNumber || '—'}
+                </Typography>
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Industry
+                </Typography>
+                {editMode ? (
+                  <FormControl fullWidth size="small">
+                    <Select value={editFields.industry} onChange={handleEditField('industry')} sx={{ borderRadius: 2 }}>
+                      <MenuItem value="">Select Industry</MenuItem>
+                      {INDUSTRIES.map((i) => (
+                        <MenuItem key={i} value={i}>{i}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : (
+                  <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                    {lead.industry || '—'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Organization Type
+                </Typography>
+                {editMode ? (
+                  <FormControl fullWidth size="small">
+                    <Select value={editFields.organizationType} onChange={handleEditField('organizationType')} sx={{ borderRadius: 2 }}>
+                      <MenuItem value="">Select Type</MenuItem>
+                      {ORGANIZATION_TYPES.map((t) => (
+                        <MenuItem key={t} value={t}>{t}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : (
+                  <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                    {lead.organizationType || '—'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Lead Source
+                </Typography>
+                {editMode ? (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <FormControl fullWidth size="small" error={Boolean(fieldErrors.leadSource)}>
+                      <Select
+                        value={editFields.leadSourceDropdown || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditFields((p) => ({
+                            ...p,
+                            leadSourceDropdown: val,
+                            ...(val !== 'Other' ? { customLeadSource: '' } : {}),
+                          }));
+                          if (fieldErrors.leadSource || fieldErrors.customLeadSource) {
+                            setFieldErrors((prev) => ({ ...prev, leadSource: undefined, customLeadSource: undefined }));
+                          }
+                        }}
+                        sx={{ borderRadius: 2 }}
+                      >
+                        <MenuItem value="">Select Source</MenuItem>
+                        {LEAD_SOURCES.map((s) => (
+                          <MenuItem key={s} value={s}>{s}</MenuItem>
+                        ))}
+                      </Select>
+                      {fieldErrors.leadSource && (
+                        <Typography variant="caption" color="error" sx={{ mt: 0.5, ml: 1.5 }}>
+                          {fieldErrors.leadSource}
+                        </Typography>
+                      )}
+                    </FormControl>
+                    {editFields.leadSourceDropdown === 'Other' && (
+                      <TextField
+                        size="small"
+                        fullWidth
+                        required
+                        label="Please specify source"
+                        placeholder="Please specify source"
+                        value={editFields.customLeadSource || ''}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditFields((p) => ({ ...p, customLeadSource: val }));
+                          if (fieldErrors.customLeadSource) {
+                            setFieldErrors((prev) => ({ ...prev, customLeadSource: undefined }));
+                          }
+                        }}
+                        error={Boolean(fieldErrors.customLeadSource)}
+                        helperText={fieldErrors.customLeadSource}
+                        sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                      />
+                    )}
+                  </Box>
+                ) : (
+                  <Chip
+                    label={lead.leadSource || 'Unknown'}
+                    size="small"
+                    sx={{
+                      borderRadius: 1.5,
+                      fontWeight: 500,
+                      bgcolor: '#f1f5f9',
+                      border: '1px solid',
+                      borderColor: 'divider',
+                    }}
+                  />
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Software Used
+                </Typography>
+                {editMode ? (
+                  <FormControl fullWidth size="small">
+                    <Select
+                      value={editFields.existingSoftwareUsed || ''}
+                      onChange={(e) => setEditFields((p) => ({ ...p, existingSoftwareUsed: e.target.value }))}
+                      sx={{ borderRadius: 2 }}
+                    >
+                      {['', 'Yes', 'No', 'Unknown'].map((o) => (
+                        <MenuItem key={o} value={o}>{o || 'Select option'}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                ) : (
+                  <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                    {lead.existingSoftwareUsed ? `${lead.existingSoftwareUsed}${lead.softwareName ? ` (${lead.softwareName})` : ''}` : '—'}
+                  </Typography>
+                )}
+              </Grid>
+
+              {editMode && editFields.existingSoftwareUsed === 'Yes' && (
+                <Grid item xs={12}>
+                  <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                    Software Name
+                  </Typography>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="Enter existing software name"
+                    value={editFields.softwareName || ''}
+                    onChange={(e) => setEditFields((p) => ({ ...p, softwareName: e.target.value }))}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                </Grid>
+              )}
+
+              <Grid item xs={12}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Address
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    multiline
+                    rows={2}
+                    placeholder="Full address"
+                    value={editFields.address}
+                    onChange={handleEditField('address')}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ color: 'text.secondary', lineHeight: 1.5 }}>
+                    {lead.address || '—'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Verified Hospital Latitude
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="e.g. 12.971598"
+                    value={editFields.hospitalLatitude}
+                    onChange={handleEditField('hospitalLatitude')}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                    {lead.hospitalCoordinates?.latitude != null ? lead.hospitalCoordinates.latitude.toFixed(6) : 'Not recorded'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12} sm={6}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Verified Hospital Longitude
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    placeholder="e.g. 77.594562"
+                    value={editFields.hospitalLongitude}
+                    onChange={handleEditField('hospitalLongitude')}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                    {lead.hospitalCoordinates?.longitude != null ? lead.hospitalCoordinates.longitude.toFixed(6) : 'Not recorded'}
+                  </Typography>
+                )}
+              </Grid>
+
+              <Grid item xs={12}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500} display="block" sx={{ mb: 0.5 }}>
+                  Remarks
+                </Typography>
+                {editMode ? (
+                  <TextField
+                    size="small"
+                    fullWidth
+                    multiline
+                    rows={2}
+                    placeholder="Remarks / notes"
+                    value={editFields.remarks || ''}
+                    onChange={handleEditField('remarks')}
+                    sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+                  />
+                ) : (
+                  <Typography variant="body2" sx={{ color: 'text.secondary', lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                    {lead.remarks || lead.sourceRemarks || lead.latestRemark || '—'}
+                  </Typography>
+                )}
+              </Grid>
+            </Grid>
+
+            {editMode && (
+              <Box sx={{ mt: 3, pt: 2, borderTop: '1px solid', borderColor: 'divider', display: 'flex', gap: 1.5, justifyContent: 'flex-end' }}>
+                <Button
+                  variant="outlined"
+                  size="small"
+                  onClick={() => {
+                    resetEditFields(lead);
+                    setFieldErrors({});
+                    setEditMode(false);
+                  }}
+                  sx={{ borderRadius: 2, textTransform: 'none', borderColor: 'divider', color: 'text.secondary' }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  size="small"
+                  onClick={handleSaveEdit}
+                  sx={{
+                    borderRadius: 2,
+                    textTransform: 'none',
+                    bgcolor: 'primary.main',
+                    color: '#ffffff',
+                    boxShadow: '0 2px 8px rgba(234, 88, 12, 0.25)',
+                    '&:hover': { bgcolor: 'primary.dark' },
+                  }}
+                >
+                  Save Changes
+                </Button>
+              </Box>
+            )}
+          </Paper>
+
+
+          {/* Quick Activity Cards (Walk-in, Demo, Sales Follow-up when records exist) */}
+          {(lead.latestWalkIn?.walkInDate || lead.latestDemo?.demoDate || lead.latestSalesFollowUp?.followUpDate) && (
+            <Box sx={{ mb: 3 }}>
+              <Grid container spacing={2}>
+        {/* Card 5: Latest Walk-in (Requirement 5) */}
+        {lead.latestWalkIn?.walkInDate && (
+          <Grid item xs={12} sm={6} md={4}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2.2,
+                borderRadius: 3,
+                border: '1px solid',
+                borderColor: 'rgba(5, 150, 105, 0.3)',
+                bgcolor: 'rgba(5, 150, 105, 0.02)',
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
+                  Latest Walk-in
+                </Typography>
+                <DirectionsWalk sx={{ fontSize: 18, color: '#059669' }} />
+              </Box>
+              <Box>
+                <Typography variant="body2" fontWeight={700} sx={{ color: '#059669', mb: 0.5, fontSize: 13 }}>
+                  {formatDate(lead.latestWalkIn.walkInDate)} • {lead.latestWalkIn.walkInTime}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {lead.latestWalkIn.remark || 'In-person visit'}
+                </Typography>
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
+                  {`Assigned to: ${lead.latestWalkIn.salesAgentName || 'Sales Agent'}${lead.latestWalkIn.assignedByName ? ` • Assigned by: ${lead.latestWalkIn.assignedByName}` : ''}`}
+                </Typography>
+              </Box>
+            </Paper>
+          </Grid>
+        )}
+
+        {/* Card 6: Latest Demo (Requirements 1, 6) */}
+        {lead.latestDemo?.demoDate && (
+          <Grid item xs={12} sm={6} md={4}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2.2,
+                borderRadius: 3,
+                border: '1px solid',
+                borderColor: 'rgba(99, 102, 241, 0.3)',
+                bgcolor: 'rgba(99, 102, 241, 0.02)',
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
+                  Latest Demo
+                </Typography>
+                <LaptopMac sx={{ fontSize: 18, color: '#4f46e5' }} />
+              </Box>
+              <Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
+                  <Typography variant="body2" fontWeight={700} sx={{ color: '#4f46e5', fontSize: 13 }}>
+                    {formatDate(lead.latestDemo.demoDate)} • {lead.latestDemo.demoTime}
+                  </Typography>
+                  <Chip
+                    label={lead.latestDemo.status}
+                    size="small"
+                    sx={{
+                      fontWeight: 700,
+                      fontSize: 10,
+                      height: 20,
+                      ...getDemoStatusStyle(lead.latestDemo.status),
+                    }}
+                  />
+                </Box>
+                {lead.latestDemo.remarks && (
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {lead.latestDemo.remarks}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
+                  {lead.latestDemo.updatedByName
+                    ? `Updated by: ${lead.latestDemo.updatedByName}`
+                    : `Assigned to: ${lead.latestDemo.salesAgentName || 'Sales Agent'}${lead.latestDemo.assignedByName ? ` • Assigned by: ${lead.latestDemo.assignedByName}` : ''}`}
+                </Typography>
+              </Box>
+            </Paper>
+          </Grid>
+        )}
+
+        {/* Card 6b: Latest Sales Follow-up */}
+        {lead.latestSalesFollowUp?.followUpDate && (
+          <Grid item xs={12} sm={6} md={4}>
+            <Paper
+              elevation={0}
+              sx={{
+                p: 2.2,
+                borderRadius: 3,
+                border: '1px solid',
+                borderColor: 'rgba(2, 132, 199, 0.3)',
+                bgcolor: 'rgba(2, 132, 199, 0.02)',
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'space-between',
+              }}
+            >
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
+                  Latest Sales Follow-up
+                </Typography>
+                <Schedule sx={{ fontSize: 18, color: '#0284c7' }} />
+              </Box>
+              <Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5, flexWrap: 'wrap' }}>
+                  <Typography variant="body2" fontWeight={700} sx={{ color: '#0284c7', fontSize: 13 }}>
+                    {formatDate(lead.latestSalesFollowUp.followUpDate)} • {lead.latestSalesFollowUp.followUpTime || '11:00'}
+                  </Typography>
+                  <Chip
+                    label={lead.latestSalesFollowUp.status || 'Planned'}
+                    size="small"
+                    sx={{
+                      fontWeight: 700,
+                      fontSize: 10,
+                      height: 20,
+                      bgcolor: 'rgba(2, 132, 199, 0.12)',
+                      color: '#0284c7',
+                      border: '1px solid rgba(2, 132, 199, 0.3)',
+                    }}
+                  />
+                </Box>
+                {lead.latestSalesFollowUp.remarks && (
+                  <Typography variant="caption" color="text.secondary" display="block" sx={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {lead.latestSalesFollowUp.remarks}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10, display: 'block', mt: 0.5 }}>
+                  {`Assigned to: ${lead.latestSalesFollowUp.salesAgentName || 'Sales Agent'}${lead.latestSalesFollowUp.assignedByName ? ` • Assigned by: ${lead.latestSalesFollowUp.assignedByName}` : ''}`}
+                </Typography>
+              </Box>
+            </Paper>
+          </Grid>
+        )}
+
+              </Grid>
+            </Box>
+          )}
+        </Grid>
+
+        {/* RIGHT COLUMN: Status & Disposition, Next Follow-up -> Assignment & Ownership -> Lead Ownership -> Location & Device */}
+        <Grid item xs={12} lg={4.5} xl={4}>
+          {/* Status & Disposition & Next Follow-up Cards (Immediately above Assignment & Ownership) */}
+          <Grid container spacing={2} sx={{ mb: 3 }}>
+        {/* Card 1: Status & Latest Disposition */}
+        <Grid item xs={12} sm={6}>
+          <Paper
+            elevation={0}
+            sx={{
+              p: 2.2,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
+                Status & Disposition
+              </Typography>
+              <Assessment sx={{ fontSize: 18, color: 'primary.main' }} />
+            </Box>
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1, flexWrap: 'wrap' }}>
+                <Chip
+                  label={lead.closureStatus || 'OPEN'}
+                  size="small"
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: 11,
+                    borderRadius: 1.5,
+                    bgcolor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : lead.closureStatus === 'LOST' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(234, 88, 12, 0.12)',
+                    color: lead.closureStatus === 'WON' ? 'success.main' : lead.closureStatus === 'LOST' ? 'error.main' : 'primary.main',
+                    border: '1px solid',
+                    borderColor: lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : lead.closureStatus === 'LOST' ? 'rgba(239, 68, 68, 0.3)' : 'rgba(234, 88, 12, 0.3)',
+                  }}
+                />
+                <Chip
+                  label={lead.latestDisposition || lead.disposition || 'No Calls Yet'}
+                  size="small"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: 11,
+                    borderRadius: 1.5,
+                    bgcolor: dispStyle.bg,
+                    color: dispStyle.color,
+                    border: `1px solid ${dispStyle.border}`,
+                  }}
+                />
+                {(() => {
+                  const rawTemp = lead.leadTemperature;
+                  if (!rawTemp) {
+                    return (
+                      <Chip
+                        label="Unclassified"
+                        size="small"
+                        clickable
+                        onClick={() => setLeadActionOpen(true)}
+                        title="Click to classify lead temperature"
+                        sx={{
+                          fontWeight: 600,
+                          fontSize: 11,
+                          borderRadius: 1.5,
+                          bgcolor: '#f1f5f9',
+                          color: '#64748b',
+                          border: '1px dashed #cbd5e1',
+                          cursor: 'pointer',
+                          '&:hover': {
+                            bgcolor: 'rgba(234, 88, 12, 0.08)',
+                            borderColor: '#ea580c',
+                            color: '#ea580c',
+                          },
+                        }}
+                      />
+                    );
+                  }
+
+                  const norm = rawTemp.charAt(0).toUpperCase() + rawTemp.slice(1).toLowerCase();
+                  const isHot = norm === 'Hot';
+                  const isWarm = norm === 'Warm';
+                  const isCold = norm === 'Cold';
+                  const label = isHot ? '🔥 Hot' : isWarm ? '🟠 Warm' : isCold ? '❄️ Cold' : norm;
+                  const color = isHot ? '#b91c1c' : isWarm ? '#c2410c' : isCold ? '#0369a1' : '#64748b';
+                  const bg = isHot ? 'rgba(239, 68, 68, 0.12)' : isWarm ? 'rgba(234, 88, 12, 0.12)' : isCold ? 'rgba(2, 132, 199, 0.12)' : 'rgba(100, 116, 139, 0.12)';
+                  const border = isHot ? 'rgba(239, 68, 68, 0.3)' : isWarm ? 'rgba(234, 88, 12, 0.3)' : isCold ? 'rgba(2, 132, 199, 0.3)' : 'rgba(100, 116, 139, 0.3)';
+                  return (
+                    <Chip
+                      label={label}
+                      size="small"
+                      clickable
+                      onClick={() => setLeadActionOpen(true)}
+                      title="Click to update classification"
+                      sx={{
+                        fontWeight: 700,
+                        fontSize: 11,
+                        borderRadius: 1.5,
+                        bgcolor: bg,
+                        color: color,
+                        border: `1px solid ${border}`,
+                        cursor: 'pointer',
+                      }}
+                    />
+                  );
+                })()}
+              </Box>
+              <Typography variant="caption" color="text.secondary" display="block">
+                Last Call: {formatDateTime(lead.lastCalledAt)}
+              </Typography>
+            </Box>
+          </Paper>
+        </Grid>
+
+        {/* Card 2: Follow-up Details */}
+        <Grid item xs={12} sm={6}>
+          <Paper
+            elevation={0}
+            sx={{
+              p: 2.2,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: followUpStatus.borderColor,
+              bgcolor: 'background.paper',
+              height: '100%',
+              display: 'flex',
+              flexDirection: 'column',
+              justifyContent: 'space-between',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+              <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ letterSpacing: 0.5, textTransform: 'uppercase', fontSize: 11 }}>
+                Next Follow-up
+              </Typography>
+              <CalendarMonth sx={{ fontSize: 18, color: followUpStatus.color }} />
+            </Box>
+            <Box>
+              <Typography
+                variant="body2"
+                fontWeight={700}
+                sx={{
+                  color: followUpStatus.color,
+                  mb: 0.5,
+                  fontSize: 13,
+                }}
+              >
+                {lead.nextFollowUpAt ? formatDateTime(lead.nextFollowUpAt) : 'No Follow-up Scheduled'}
+              </Typography>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 0.75, flexWrap: 'wrap', gap: 0.5 }}>
+                <Chip
+                  label={followUpStatus.shortLabel}
+                  size="small"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: 10,
+                    height: 20,
+                    borderRadius: 1,
+                    bgcolor: followUpStatus.chipBg,
+                    color: followUpStatus.chipColor,
+                  }}
+                />
+                {lead.nextFollowUpAt && !isClosed && canEdit && (
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      color="success"
+                      startIcon={<CheckCircle sx={{ fontSize: 12 }} />}
+                      onClick={handleOpenCompleteFollowUp}
+                      sx={{
+                        fontSize: 11,
+                        textTransform: 'none',
+                        py: 0.2,
+                        px: 0.75,
+                        minWidth: 'auto',
+                        borderRadius: 1.5,
+                        fontWeight: 600,
+                        borderColor: 'rgba(16, 185, 129, 0.4)',
+                        color: '#059669',
+                        '&:hover': {
+                          bgcolor: 'rgba(16, 185, 129, 0.08)',
+                          borderColor: '#059669',
+                        },
+                      }}
+                    >
+                      Complete
+                    </Button>
+                    <Button
+                      size="small"
+                      variant="text"
+                      startIcon={<Edit sx={{ fontSize: 11 }} />}
+                      onClick={handleOpenReschedule}
+                      sx={{
+                        fontSize: 11,
+                        textTransform: 'none',
+                        p: 0,
+                        minWidth: 'auto',
+                        color: 'primary.main',
+                        fontWeight: 600,
+                        '&:hover': { bgcolor: 'transparent', textDecoration: 'underline' },
+                      }}
+                    >
+                      Edit / Reschedule
+                    </Button>
+                  </Box>
+                )}
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+          </Grid>
+
+          {/* Section 3: Assignment & Ownership */}
+          {/* Section 3: Assignment & Ownership */}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'rgba(234, 88, 12, 0.12)',
+                    color: 'primary.main',
+                  }}
+                >
+                  <AssignmentInd sx={{ fontSize: 18 }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
+                  Assignment & Ownership
+                </Typography>
+              </Box>
+
+              {canEdit && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<SwapHoriz sx={{ fontSize: 14 }} />}
+                  onClick={handleOpenTransfer}
+                  sx={{
+                    borderRadius: 2,
+                    textTransform: 'none',
+                    fontSize: 11,
+                    borderColor: 'divider',
+                    color: 'primary.main',
+                    '&:hover': { borderColor: 'primary.main' },
+                  }}
+                >
+                  Reassign
+                </Button>
+              )}
+            </Box>
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {/* Current Owner Prominent Display */}
+              <Paper
+                variant="outlined"
+                sx={{
+                  p: 2,
+                  borderRadius: 2.5,
+                  bgcolor: 'rgba(234, 88, 12, 0.04)',
+                  borderColor: 'rgba(234, 88, 12, 0.3)',
+                }}
+              >
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                  <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                    Current Owner (Active)
+                  </Typography>
+                  <Chip
+                    label="Active Owner"
+                    size="small"
+                    sx={{
+                      height: 20,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      bgcolor: 'primary.main',
+                      color: '#ffffff',
+                      borderRadius: 1,
+                    }}
+                  />
+                </Box>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Avatar
+                    sx={{
+                      width: 36,
+                      height: 36,
+                      fontSize: 14,
+                      fontWeight: 700,
+                      bgcolor: 'primary.main',
+                      color: '#ffffff',
+                    }}
+                  >
+                    {ownerName.charAt(0).toUpperCase()}
+                  </Avatar>
+                  <Box sx={{ flexGrow: 1 }}>
+                    <Typography variant="subtitle2" fontWeight={700} sx={{ color: 'text.primary' }}>
+                      {ownerName}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {lead.currentOwner?.email || (lead.currentOwner?.username ? `@${lead.currentOwner.username}` : 'No email')}
+                    </Typography>
+                  </Box>
+                  <Chip
+                    label={lead.currentOwner?.agentRole || lead.currentOwner?.role || 'Agent'}
+                    size="small"
+                    variant="outlined"
+                    sx={{ borderRadius: 1.5, fontSize: 11, fontWeight: 600 }}
+                  />
+                </Box>
+              </Paper>
+            </Box>
+          </Paper>
+
+          {/* Section: Lead Ownership / Ownership History (Immediately Below Assignment & Ownership) */}
+          {/* Section: Lead Ownership / Ownership History (Immediately below Assignment & Ownership) */}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'rgba(234, 88, 12, 0.12)',
+                    color: 'primary.main',
+                  }}
+                >
+                  <History sx={{ fontSize: 18 }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
+                  Lead Ownership
+                </Typography>
+              </Box>
+              {ownershipChain.length > 1 && (
+                <Button
+                  size="small"
+                  variant="text"
+                  onClick={() => setHistoryTab(2)}
+                  sx={{ p: 0, minWidth: 'auto', fontSize: 11, textTransform: 'none', color: 'primary.main', fontWeight: 600 }}
+                >
+                  View Details →
+                </Button>
+              )}
+            </Box>
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              {/* Ownership Chain Summary */}
+              {ownershipChain.length > 1 ? (
+                <Box sx={{ p: 1.75, borderRadius: 2, bgcolor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                  <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 1 }}>
+                    Ownership Chain ({ownershipChain.length} stages)
+                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 0.75 }}>
+                    {ownershipChain.map((step, idx) => {
+                      const name = step.newOwner?.fullName || step.newOwnerName || step.newOwner?.username || 'Agent';
+                      const isLast = idx === ownershipChain.length - 1;
+                      return (
+                        <React.Fragment key={`chain-chip-${idx}`}>
+                          <Chip
+                            size="small"
+                            label={`${idx === 0 ? 'First: ' : ''}${name}${isLast ? ' (Current)' : ''}`}
+                            color={isLast ? 'primary' : 'default'}
+                            variant={isLast ? 'filled' : 'outlined'}
+                            sx={{
+                              fontSize: 11,
+                              fontWeight: isLast ? 700 : 500,
+                              borderRadius: 1.5,
+                              ...(isLast ? { bgcolor: 'primary.main', color: '#ffffff' } : { bgcolor: '#ffffff' }),
+                            }}
+                          />
+                          {!isLast && <ArrowForward sx={{ fontSize: 12, color: '#94a3b8' }} />}
+                        </React.Fragment>
+                      );
+                    })}
+                  </Box>
+                </Box>
+              ) : (
+                <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: '#f8fafc', border: '1px solid #e2e8f0' }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Initial owner: <strong>{ownerName}</strong> (No transfers recorded)
+                  </Typography>
+                </Box>
+              )}
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Created By
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                  {lead.createdBy?.fullName || lead.createdBy?.username || 'System'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Created Date
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                  {formatDateTime(lead.createdAt)}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Last Updated
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                  {formatDateTime(lead.updatedAt)}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Last Updated By
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary', fontWeight: 600 }}>
+                  {lead.updatedBy?.fullName || lead.updatedBy?.username || lead.updatedByName || lead.createdBy?.fullName || lead.createdBy?.username || '—'}
+                </Typography>
+              </Box>
+            </Box>
+          </Paper>
+
+          {/* Section: Lead Created Location & Device (where permitted) */}
+          {/* Section: Lead Created Location & Device */}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'rgba(37, 99, 235, 0.1)',
+                    color: '#2563eb',
+                  }}
+                >
+                  <MyLocation sx={{ fontSize: 18 }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
+                  Lead Created Location & Device
+                </Typography>
+              </Box>
+
+              <Chip
+                size="small"
+                label={lead.createdLocation?.status || 'Not recorded'}
+                sx={{
+                  fontWeight: 700,
+                  fontSize: 11,
+                  borderRadius: 1.5,
+                  bgcolor:
+                    lead.createdLocation?.status === 'Captured'
+                      ? 'rgba(16, 185, 129, 0.12)'
+                      : lead.createdLocation?.status === 'Permission Denied'
+                      ? 'rgba(245, 158, 11, 0.12)'
+                      : 'rgba(148, 163, 184, 0.15)',
+                  color:
+                    lead.createdLocation?.status === 'Captured'
+                      ? '#059669'
+                      : lead.createdLocation?.status === 'Permission Denied'
+                      ? '#d97706'
+                      : '#64748b',
+                  border: '1px solid',
+                  borderColor:
+                    lead.createdLocation?.status === 'Captured'
+                      ? 'rgba(16, 185, 129, 0.3)'
+                      : lead.createdLocation?.status === 'Permission Denied'
+                      ? 'rgba(245, 158, 11, 0.3)'
+                      : 'rgba(148, 163, 184, 0.3)',
+                }}
+              />
+            </Box>
+
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.75 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Creator (Agent)
+                </Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
+                  {lead.createdBy?.fullName || lead.createdBy?.username || lead.createdByName || 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Verified Hospital Coordinates
+                </Typography>
+                <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
+                  {lead.hospitalCoordinates?.latitude != null && lead.hospitalCoordinates?.longitude != null
+                    ? `${lead.hospitalCoordinates.latitude.toFixed(6)}, ${lead.hospitalCoordinates.longitude.toFixed(6)}`
+                    : 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Geofence Result & Distance
+                </Typography>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Chip
+                    size="small"
+                    label={lead.createdLocation?.geofenceStatus || 'Not Verified'}
+                    sx={{
+                      height: 20,
+                      fontSize: 10,
+                      fontWeight: 700,
+                      bgcolor: lead.createdLocation?.geofenceStatus === 'Passed' ? 'rgba(16, 185, 129, 0.12)' : (lead.createdLocation?.geofenceStatus === 'Failed' ? 'rgba(239, 68, 68, 0.12)' : 'rgba(59, 130, 246, 0.12)'),
+                      color: lead.createdLocation?.geofenceStatus === 'Passed' ? '#059669' : (lead.createdLocation?.geofenceStatus === 'Failed' ? '#dc2626' : '#2563eb'),
+                    }}
+                  />
+                  {lead.createdLocation?.distanceMetres != null && (
+                    <Typography variant="caption" fontWeight={600} color="text.secondary">
+                      ({Math.round(lead.createdLocation.distanceMetres)}m from hospital)
+                    </Typography>
+                  )}
+                </Box>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Creation Timestamp
+                </Typography>
+                <Typography variant="body2" sx={{ color: 'text.primary' }}>
+                  {lead.createdLocation?.capturedAt
+                    ? formatDateTime(lead.createdLocation.capturedAt)
+                    : lead.createdAt
+                    ? formatDateTime(lead.createdAt)
+                    : 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Location Status
+                </Typography>
+                <Typography variant="body2" sx={{ fontWeight: 600, color: 'text.primary' }}>
+                  {lead.createdLocation?.status || 'Not recorded'}
+                </Typography>
+              </Box>
+
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  GPS Coordinates
+                </Typography>
+                {lead.createdLocation?.latitude !== null && lead.createdLocation?.latitude !== undefined &&
+                 lead.createdLocation?.longitude !== null && lead.createdLocation?.longitude !== undefined ? (
+                  <Box sx={{ textAlign: 'right' }}>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace', fontWeight: 600, color: 'text.primary' }}>
+                      {lead.createdLocation.latitude.toFixed(6)}, {lead.createdLocation.longitude.toFixed(6)}
+                    </Typography>
+                    {lead.createdLocation.accuracy !== null && lead.createdLocation.accuracy !== undefined && (
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 11 }}>
+                        Accuracy: ±{lead.createdLocation.accuracy}m
+                      </Typography>
+                    )}
+                    <Link
+                      href={`https://www.google.com/maps?q=${lead.createdLocation.latitude},${lead.createdLocation.longitude}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      sx={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 0.5,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: '#2563eb',
+                        mt: 0.5,
+                        textDecoration: 'none',
+                        '&:hover': { textDecoration: 'underline' },
+                      }}
+                    >
+                      Open in Maps <OpenInNew sx={{ fontSize: 12 }} />
+                    </Link>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Not recorded
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Device Name */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Device Name
+                </Typography>
+                {lead.createdDeviceName ? (
+                  <Chip
+                    size="small"
+                    label={lead.createdDeviceName}
+                    sx={{
+                      height: 22,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      bgcolor: '#f1f5f9',
+                      color: '#334155',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: 1.5,
+                    }}
+                  />
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Not recorded
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Device Installation ID */}
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', py: 0.5, flexWrap: 'wrap', gap: 1 }}>
+                <Typography variant="caption" color="text.secondary" fontWeight={500}>
+                  Device Installation ID
+                </Typography>
+                {lead.createdDeviceInstallationId ? (
+                  <Box
+                    sx={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 0.5,
+                      bgcolor: '#f1f5f9',
+                      px: 1,
+                      py: 0.25,
+                      borderRadius: 1.5,
+                      border: '1px solid #cbd5e1',
+                      maxWidth: '100%',
+                    }}
+                  >
+                    <Typography
+                      variant="caption"
+                      sx={{
+                        fontFamily: 'monospace',
+                        fontWeight: 600,
+                        color: '#475569',
+                        fontSize: 11,
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      {String(lead.createdDeviceInstallationId)}
+                    </Typography>
+                    <Tooltip title={copiedCreatedDevId ? 'Copied ID!' : 'Copy Device ID'}>
+                      <IconButton
+                        size="small"
+                        onClick={() => handleCopyCreatedDevId(String(lead.createdDeviceInstallationId))}
+                        sx={{
+                          p: 0.25,
+                          color: copiedCreatedDevId ? '#059669' : '#64748b',
+                          '&:hover': { bgcolor: 'rgba(0,0,0,0.05)' },
+                        }}
+                      >
+                        {copiedCreatedDevId ? <CheckIcon sx={{ fontSize: 13, color: '#059669' }} /> : <ContentCopy sx={{ fontSize: 13 }} />}
+                      </IconButton>
+                    </Tooltip>
+                  </Box>
+                ) : (
+                  <Typography variant="body2" color="text.secondary">
+                    Not recorded
+                  </Typography>
+                )}
+              </Box>
+
+              {/* Visit Live Camera Photo */}
+              {lead.visitPhoto?.url && (
+                <Box sx={{ mt: 2, p: 2, bgcolor: '#f8fafc', borderRadius: 2, border: '1px solid #e2e8f0' }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
+                    <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a', display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                      <PhotoCamera sx={{ fontSize: 16, color: '#059669' }} /> Live Visit Camera Photo
+                    </Typography>
+                    <Chip
+                      size="small"
+                      label="Live Captured"
+                      sx={{
+                        height: 20,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        bgcolor: 'rgba(16, 185, 129, 0.12)',
+                        color: '#059669',
+                      }}
+                    />
+                  </Box>
+                  <Box
+                    component="img"
+                    src={lead.visitPhoto.url}
+                    alt="Lead visit verification"
+                    sx={{
+                      width: '100%',
+                      maxHeight: 240,
+                      objectFit: 'cover',
+                      borderRadius: 1.5,
+                      border: '1px solid #cbd5e1',
+                      cursor: 'pointer',
+                      bgcolor: '#000',
+                    }}
+                    onClick={() => window.open(lead.visitPhoto.url, '_blank')}
+                  />
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mt: 1, flexWrap: 'wrap', gap: 1 }}>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11 }}>
+                      Captured: {lead.visitPhoto.capturedAt ? formatDateTime(lead.visitPhoto.capturedAt) : 'At lead creation'}
+                      {lead.visitPhoto.capturedByName ? ` by ${lead.visitPhoto.capturedByName}` : ''}
+                    </Typography>
+                    <Link
+                      href={lead.visitPhoto.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      sx={{ fontSize: 11, fontWeight: 600, color: '#2563eb', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 0.5 }}
+                    >
+                      View Full Size <OpenInNew sx={{ fontSize: 11 }} />
+                    </Link>
+                  </Box>
+                </Box>
+              )}
+            </Box>
+
+            <Divider sx={{ my: 2 }} />
+
+            <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: 11, fontStyle: 'italic', display: 'block' }}>
+              * Initial GPS location and browser device installation ID captured at lead creation time. Kept separate from the registered hospital address and subsequent field visit records.
+            </Typography>
+          </Paper>
+
         </Grid>
       </Grid>
+
+      {/* ============================================================== */}
+      {/* LOWER SECTION: Lead Qualification Scorecard                    */}
+      {/* ============================================================== */}
+      <Box sx={{ mb: 3 }}>
+      {/* Lead Qualification & Temperature Scorecard */}
+      <Paper
+        elevation={0}
+        sx={{
+          p: { xs: 2, sm: 2.5 },
+          mb: 3,
+          borderRadius: 3,
+          border: '1px solid',
+          borderColor: isClosed
+            ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)')
+            : (classification.badge?.border || 'divider'),
+          bgcolor: isClosed
+            ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.03)' : 'rgba(239, 68, 68, 0.03)')
+            : (classification.badge?.bg ? `${classification.badge.bg.replace('0.12', '0.04')}` : 'background.paper'),
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 2, mb: 1.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+            <Box
+              sx={{
+                width: 44,
+                height: 44,
+                borderRadius: 2,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 22,
+                bgcolor: isClosed
+                  ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
+                  : classification.badge?.bg,
+                border: '1px solid',
+                borderColor: isClosed
+                  ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)')
+                  : classification.badge?.border,
+              }}
+            >
+              {isClosed ? (lead.closureStatus === 'WON' ? '🏆' : '🛑') : (classification.badge?.label === 'Hot' ? '🔥' : classification.badge?.label === 'Warm' ? '⚡' : '❄️')}
+            </Box>
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Typography variant="subtitle1" fontWeight={700} sx={{ color: 'text.primary' }}>
+                  Lead Qualification Scorecard
+                </Typography>
+                <Chip
+                  label={isClosed ? (lead.closureStatus === 'WON' ? 'Closed Won' : 'Closed Lost') : classification.badge?.label}
+                  size="small"
+                  sx={{
+                    fontWeight: 700,
+                    fontSize: 11,
+                    height: 22,
+                    bgcolor: isClosed
+                      ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)')
+                      : classification.badge?.bg,
+                    color: isClosed
+                      ? (lead.closureStatus === 'WON' ? '#059669' : '#dc2626')
+                      : classification.badge?.color,
+                    border: `1px solid ${isClosed ? (lead.closureStatus === 'WON' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)') : classification.badge?.border}`,
+                  }}
+                />
+              </Box>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                {isClosed ? (lead.closureStatus === 'WON' ? 'Deal successfully closed and marked Won • Revenue achieved' : 'Lead closed and marked Lost • Terminal state strictly preserved') : classification.indicator}
+              </Typography>
+            </Box>
+          </Box>
+          {!isClosed && classification.score !== null && (
+            <Box sx={{ textAlign: { xs: 'left', sm: 'right' } }}>
+              <Typography variant="h5" fontWeight={800} sx={{ color: classification.badge?.color, lineHeight: 1 }}>
+                {classification.score}<span style={{ fontSize: 14, fontWeight: 600, color: '#64748b' }}>/100</span>
+              </Typography>
+              <Typography variant="caption" color="text.secondary" fontWeight={600} display="block" sx={{ mt: 0.5 }}>
+                Rule-Based Lead Score
+              </Typography>
+            </Box>
+          )}
+        </Box>
+
+        <Divider sx={{ my: 1.5, borderColor: 'divider' }} />
+
+        <Box>
+          <Typography variant="caption" fontWeight={700} color="text.secondary" sx={{ textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', mb: 1 }}>
+            Classification & Scoring Rationale
+          </Typography>
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1 }}>
+            {classification.reasons.map((r, idx) => (
+              <Chip
+                key={idx}
+                label={r}
+                size="small"
+                variant="outlined"
+                sx={{
+                  fontSize: 12,
+                  py: 0.5,
+                  height: 'auto',
+                  borderRadius: 1.5,
+                  bgcolor: 'background.paper',
+                  borderColor: isClosed ? 'divider' : (r.startsWith('+') ? 'rgba(16, 185, 129, 0.4)' : r.startsWith('-') ? 'rgba(239, 68, 68, 0.4)' : 'divider'),
+                  color: r.startsWith('+') ? '#059669' : r.startsWith('-') ? '#dc2626' : 'text.primary',
+                  '& .MuiChip-label': { whiteSpace: 'normal', py: 0.5 }
+                }}
+              />
+            ))}
+          </Box>
+        </Box>
+      </Paper>
+
+      </Box>
 
       {/* Add Call Log Dialog */}
       <Dialog
@@ -5051,25 +4798,44 @@ export default function LeadDetails() {
               </Grid>
             )}
 
+            {/* Row 1: Left = Call Date, Right = Call Time */}
             <Grid item xs={12} sm={6}>
               <TextField
                 fullWidth
+                required
                 size="small"
-                label="Call Date & Time"
-                type="datetime-local"
-                value={callData.calledAt}
-                onChange={(e) => setCallData((p) => ({ ...p, calledAt: e.target.value }))}
+                label="Call Date *"
+                type="date"
+                value={callData.callDate}
+                onChange={(e) => setCallData((p) => ({ ...p, callDate: e.target.value }))}
                 InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
 
             <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                required
+                size="small"
+                label="Call Time (24-hour) *"
+                type="time"
+                value={callData.callTime}
+                onChange={(e) => setCallData((p) => ({ ...p, callTime: e.target.value }))}
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ step: 300 }}
+                helperText="24-hour format (e.g. 14:30)"
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
+
+            {/* Row 2: Left = Disposition, Right = Lead Temperature */}
+            <Grid item xs={12} sm={6}>
               <FormControl fullWidth required size="small">
-                <InputLabel>Disposition</InputLabel>
+                <InputLabel>Disposition *</InputLabel>
                 <Select
                   value={callData.disposition}
-                  label="Disposition"
+                  label="Disposition *"
                   onChange={(e) => setCallData((p) => ({ ...p, disposition: e.target.value }))}
                   sx={{ borderRadius: 2 }}
                 >
@@ -5080,32 +4846,24 @@ export default function LeadDetails() {
               </FormControl>
             </Grid>
 
-            <Grid item xs={12}>
-              <TextField
-                fullWidth
-                required
-                label="Call Remark"
-                multiline
-                rows={3}
-                placeholder="Details about the call conversation, objections, requirements..."
-                value={callData.remark}
-                onChange={(e) => setCallData((p) => ({ ...p, remark: e.target.value }))}
-                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-              />
-            </Grid>
-
             <Grid item xs={12} sm={6}>
-              <TextField
-                fullWidth
-                size="small"
-                label="Next Follow-up / Appointment"
-                type="datetime-local"
-                value={callData.followUpAt}
-                onChange={(e) => setCallData((p) => ({ ...p, followUpAt: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
-                helperText="Schedule next follow-up date"
-                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-              />
+              <FormControl fullWidth size="small">
+                <InputLabel>Lead Temperature</InputLabel>
+                <Select
+                  value={callData.leadTemperature || ''}
+                  label="Lead Temperature"
+                  onChange={(e) => setCallData((p) => ({ ...p, leadTemperature: e.target.value }))}
+                  sx={{ borderRadius: 2 }}
+                >
+                  <MenuItem value=""><em>No change ({lead?.leadTemperature || 'Unclassified'})</em></MenuItem>
+                  <MenuItem value="Hot">🔥 Hot</MenuItem>
+                  <MenuItem value="Warm">🟠 Warm</MenuItem>
+                  <MenuItem value="Cold">❄️ Cold</MenuItem>
+                </Select>
+                <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5, fontSize: 11 }}>
+                  Current: <strong>{lead?.leadTemperature ? (lead.leadTemperature.toUpperCase() === 'HOT' ? '🔥 Hot' : lead.leadTemperature.toUpperCase() === 'WARM' ? '🟠 Warm' : '❄️ Cold') : 'Unclassified'}</strong>
+                </Typography>
+              </FormControl>
             </Grid>
 
             <Grid item xs={12} sm={6}>
@@ -5138,6 +4896,52 @@ export default function LeadDetails() {
                 />
               </Grid>
             )}
+
+            {/* Row 3: Call Remark (full width) */}
+            <Grid item xs={12}>
+              <TextField
+                fullWidth
+                required
+                label="Call Remark *"
+                multiline
+                rows={3}
+                placeholder="Details about the call conversation, objections, requirements..."
+                value={callData.remark}
+                onChange={(e) => setCallData((p) => ({ ...p, remark: e.target.value }))}
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
+
+            {/* Row 4: Next Follow-up Date & Time */}
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Next Follow-up Date"
+                type="date"
+                value={callData.followUpDate}
+                onChange={(e) => setCallData((p) => ({ ...p, followUpDate: e.target.value }))}
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ min: formatDateToYYYYMMDD(new Date()) }}
+                helperText="Schedule next follow-up date"
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
+
+            <Grid item xs={12} sm={6}>
+              <TextField
+                fullWidth
+                size="small"
+                label="Next Follow-up Time (24-hour)"
+                type="time"
+                value={callData.followUpTime}
+                onChange={(e) => setCallData((p) => ({ ...p, followUpTime: e.target.value }))}
+                InputLabelProps={{ shrink: true }}
+                inputProps={{ step: 300 }}
+                helperText="24-hour format (e.g. 14:30)"
+                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
+              />
+            </Grid>
           </Grid>
         </DialogContent>
         <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
@@ -6907,6 +6711,15 @@ export default function LeadDetails() {
           </Button>
         </DialogActions>
       </Dialog>
+      {/* Lead Action & Classification Modal */}
+      <LeadActionModal
+        open={leadActionOpen}
+        onClose={() => setLeadActionOpen(false)}
+        lead={lead}
+        onUpdated={() => {
+          refresh();
+        }}
+      />
     </Box>
   );
 }

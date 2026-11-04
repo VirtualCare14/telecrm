@@ -2,8 +2,54 @@ export function formatDateToYYYYMMDD(date) {
   if (!date) return '';
   const d = new Date(date);
   if (isNaN(d.getTime())) return '';
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+export function formatTimeTo24H(date = new Date()) {
+  if (!date) return '';
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+export function splitDateAnd24HTime(dateOrIso) {
+  if (!dateOrIso) return { date: '', time: '' };
+  const d = new Date(dateOrIso);
+  if (isNaN(d.getTime())) return { date: '', time: '' };
+  return {
+    date: d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
+    time: d.toLocaleTimeString('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }),
+  };
+}
+
+export function combineDateAndTime(dateStr, timeStr) {
+  if (!dateStr || typeof dateStr !== 'string' || !dateStr.trim()) return undefined;
+  const cleanDate = dateStr.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+    const d = new Date(cleanDate);
+    return isNaN(d.getTime()) ? undefined : d.toISOString();
+  }
+
+  let cleanTime = timeStr && typeof timeStr === 'string' ? timeStr.trim() : '00:00';
+  const timeParts = cleanTime.split(':');
+  const hours = String(timeParts[0] || '00').padStart(2, '0');
+  const minutes = String(timeParts[1] || '00').padStart(2, '0');
+  const seconds = String(timeParts[2] || '00').padStart(2, '0');
+
+  const istIso = `${cleanDate}T${hours}:${minutes}:${seconds}+05:30`;
+  const d = new Date(istIso);
+  if (isNaN(d.getTime())) return undefined;
+  return d.toISOString();
 }
 
 export function toLocalDatetimeInput(date = new Date()) {
@@ -19,9 +65,16 @@ export function toLocalDatetimeInput(date = new Date()) {
   return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
-export function toISOFromLocalDatetime(localStr) {
-  if (!localStr) return undefined;
-  const d = new Date(localStr);
+export function toISOFromLocalDatetime(dateOrDateTime, timeStr) {
+  if (!dateOrDateTime) return undefined;
+  if (timeStr !== undefined) {
+    return combineDateAndTime(dateOrDateTime, timeStr);
+  }
+  if (typeof dateOrDateTime === 'string' && dateOrDateTime.includes('T')) {
+    const [dPart, tPart] = dateOrDateTime.split('T');
+    return combineDateAndTime(dPart, tPart);
+  }
+  const d = new Date(dateOrDateTime);
   if (isNaN(d.getTime())) return undefined;
   return d.toISOString();
 }
@@ -73,9 +126,10 @@ export function formatDateTime(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit',
-    hour12: true
+    hour12: false
   });
 }
 
@@ -84,6 +138,7 @@ export function formatDate(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     day: '2-digit', month: '2-digit', year: 'numeric'
   });
 }
@@ -109,9 +164,10 @@ export function formatTime(dateStr) {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '—';
   return d.toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: true
+    hour12: false
   });
 }
 
@@ -218,4 +274,4 @@ export function getFollowUpStatus(dateStr, closureStatus = 'OPEN') {
     bg: 'rgba(2, 132, 199, 0.12)',
     border: 'rgba(2, 132, 199, 0.35)',
   };
-}
+}

@@ -53,6 +53,12 @@ export function getLeadActionMenuItems(lead, user, explicitIsAdmin) {
   // 2. Open leads: Unified 9-action menu + Delete Lead (Admin only)
   const items = [
     {
+      key: 'lead_action',
+      label: 'Lead Action (Temperature & Disposition)',
+      category: 'classification',
+      color: '#ea580c',
+    },
+    {
       key: 'log_call',
       label: 'Log Call',
       category: 'call',
