@@ -20,7 +20,7 @@ exports.createLead = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, contacts, currentOwner } = req.body;
+    const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, contacts, currentOwner, leadTemperature, temperature } = req.body;
     if (!organizationName || !leadSource || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
       await session.abortTransaction();
       session.endSession();
@@ -41,6 +41,15 @@ exports.createLead = async (req, res, next) => {
     const creatorName = creatorUser ? (creatorUser.fullName || creatorUser.username) : 'Creator';
 
     const initialRemark = (remarks !== undefined ? remarks : (sourceRemarks || '')).trim();
+
+    let initialTemperature = null;
+    const rawTemp = leadTemperature !== undefined ? leadTemperature : temperature;
+    if (rawTemp && typeof rawTemp === 'string' && rawTemp.trim()) {
+      const t = rawTemp.trim().toLowerCase();
+      if (t === 'hot') initialTemperature = 'Hot';
+      else if (t === 'warm') initialTemperature = 'Warm';
+      else if (t === 'cold') initialTemperature = 'Cold';
+    }
 
     // Parse and sanitize initial Lead Creation Location & Device metadata
     let createdLocation = {
@@ -271,6 +280,19 @@ exports.createLead = async (req, res, next) => {
       createdBy: req.userId,
       updatedBy: req.userId,
       updatedByName: creatorName,
+      leadTemperature: initialTemperature,
+      temperatureUpdatedBy: initialTemperature ? req.userId : null,
+      temperatureUpdatedByName: initialTemperature ? creatorName : null,
+      temperatureUpdatedAt: initialTemperature ? new Date() : null,
+      temperatureHistory: initialTemperature ? [{
+        temperature: initialTemperature,
+        previousTemperature: null,
+        changedBy: req.userId,
+        changedByName: creatorName,
+        changedAt: new Date(),
+        source: 'Create Lead',
+        remark: initialRemark || 'Initial classification on lead creation',
+      }] : [],
       hospitalCoordinates: hospCoords || undefined,
       createdLocation,
       createdDeviceInstallationId,
@@ -312,6 +334,7 @@ exports.createLead = async (req, res, next) => {
         leadNumber,
         organizationName,
         leadSource,
+        leadTemperature: initialTemperature,
         hospitalCoordinates: hospCoords,
         createdLocation,
         createdDeviceInstallationId,
@@ -491,6 +514,27 @@ exports.listLeads = async (req, res, next) => {
       conditions.push({ latestDisposition: disp });
     }
 
+    // Temperature filter integrated directly into backend MongoDB conditions
+    const temperatureParam = (req.query.temperature || req.query.leadTemperature || '').trim();
+    if (temperatureParam && temperatureParam.toLowerCase() !== 'all') {
+      const norm = temperatureParam.toLowerCase();
+      if (norm === 'hot') {
+        conditions.push({ leadTemperature: { $in: ['Hot', 'hot', 'HOT'] } });
+      } else if (norm === 'warm') {
+        conditions.push({ leadTemperature: { $in: ['Warm', 'warm', 'WARM'] } });
+      } else if (norm === 'cold') {
+        conditions.push({ leadTemperature: { $in: ['Cold', 'cold', 'COLD'] } });
+      } else if (norm === 'unclassified') {
+        conditions.push({
+          $or: [
+            { leadTemperature: null },
+            { leadTemperature: { $exists: false } },
+            { leadTemperature: '' },
+          ]
+        });
+      }
+    }
+
     // Search logic
     if (search) {
       const isNumeric = /^\d{1,5}$/.test(search);
@@ -529,37 +573,6 @@ exports.listLeads = async (req, res, next) => {
 
     const filter = conditions.length > 0 ? { $and: conditions } : {};
 
-    const temperatureParam = (req.query.temperature || '').trim();
-    if (temperatureParam) {
-      // Query matching leads sorted newest-first by createdAt with stable _id fallback
-      const allLeads = await Lead.find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .populate('primaryContact')
-        .populate('currentOwner', 'fullName email username')
-        .lean();
-
-      const classified = allLeads.map((lead) => {
-        const classification = classifyLead(lead);
-        return {
-          ...lead,
-          classification,
-          temperature: classification.temperature,
-          leadScore: classification.score,
-        };
-      });
-
-      const filtered = classified.filter((l) =>
-        (l.classification?.classification || '').toLowerCase() === temperatureParam.toLowerCase() ||
-        (l.classification?.temperature || '').toLowerCase() === temperatureParam.toLowerCase()
-      );
-
-      const total = filtered.length;
-      const skip = (page - 1) * limit;
-      const pagedLeads = filtered.slice(skip, skip + limit);
-
-      return res.json({ leads: pagedLeads, page, limit, total, totalPages: Math.ceil(total / limit) || 1 });
-    }
-
     const skip = (page - 1) * limit;
     const [leads, total] = await Promise.all([
       Lead.find(filter)
@@ -572,12 +585,31 @@ exports.listLeads = async (req, res, next) => {
     ]);
 
     const classifiedLeads = leads.map((lead) => {
-      const classification = classifyLead(lead);
+      const dynamicClass = classifyLead(lead);
+      const effectiveTemp = lead.leadTemperature
+        ? (lead.leadTemperature.charAt(0).toUpperCase() + lead.leadTemperature.slice(1).toLowerCase())
+        : dynamicClass.temperature;
+      let badge = dynamicClass.badge;
+      if (lead.leadTemperature) {
+        if (effectiveTemp === 'Hot') {
+          badge = { label: 'Hot', color: '#b91c1c', bg: 'rgba(239, 68, 68, 0.12)', border: 'rgba(239, 68, 68, 0.3)' };
+        } else if (effectiveTemp === 'Warm') {
+          badge = { label: 'Warm', color: '#c2410c', bg: 'rgba(234, 88, 12, 0.12)', border: 'rgba(234, 88, 12, 0.3)' };
+        } else if (effectiveTemp === 'Cold') {
+          badge = { label: 'Cold', color: '#0369a1', bg: 'rgba(2, 132, 199, 0.12)', border: 'rgba(2, 132, 199, 0.3)' };
+        }
+      }
       return {
         ...lead,
-        classification,
-        temperature: classification.temperature,
-        leadScore: classification.score,
+        classification: {
+          ...dynamicClass,
+          classification: effectiveTemp || dynamicClass.classification,
+          temperature: effectiveTemp,
+          badge,
+        },
+        temperature: effectiveTemp,
+        leadTemperature: effectiveTemp,
+        leadScore: dynamicClass.score,
       };
     });
 
@@ -667,10 +699,30 @@ exports.getLead = async (req, res, next) => {
       lead.updatedByName = lead.createdByName || 'Unknown';
     }
 
-    // Attach dynamic lead classification (pure calculation, no DB mutation)
-    lead.classification = classifyLead(lead);
-    lead.temperature = lead.classification.temperature;
-    lead.leadScore = lead.classification.score;
+    // Attach dynamic lead classification with saved DB leadTemperature priority
+    const dynamicClass = classifyLead(lead);
+    const effectiveTemp = lead.leadTemperature
+      ? (lead.leadTemperature.charAt(0).toUpperCase() + lead.leadTemperature.slice(1).toLowerCase())
+      : dynamicClass.temperature;
+    let badge = dynamicClass.badge;
+    if (lead.leadTemperature) {
+      if (effectiveTemp === 'Hot') {
+        badge = { label: 'Hot', color: '#b91c1c', bg: 'rgba(239, 68, 68, 0.12)', border: 'rgba(239, 68, 68, 0.3)' };
+      } else if (effectiveTemp === 'Warm') {
+        badge = { label: 'Warm', color: '#c2410c', bg: 'rgba(234, 88, 12, 0.12)', border: 'rgba(234, 88, 12, 0.3)' };
+      } else if (effectiveTemp === 'Cold') {
+        badge = { label: 'Cold', color: '#0369a1', bg: 'rgba(2, 132, 199, 0.12)', border: 'rgba(2, 132, 199, 0.3)' };
+      }
+    }
+    lead.classification = {
+      ...dynamicClass,
+      classification: effectiveTemp || dynamicClass.classification,
+      temperature: effectiveTemp,
+      badge,
+    };
+    lead.temperature = effectiveTemp;
+    lead.leadTemperature = effectiveTemp;
+    lead.leadScore = dynamicClass.score;
 
     res.json({ lead });
   } catch (err) {
@@ -683,7 +735,7 @@ exports.updateLead = async (req, res, next) => {
   session.startTransaction();
   try {
     const leadId = req.params.id;
-    const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, existingSoftwareUsed, softwareName } = req.body;
+    const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, existingSoftwareUsed, softwareName, leadTemperature, temperature, disposition } = req.body;
 
     const lead = await Lead.findById(leadId).session(session);
     if (!lead) {
@@ -717,6 +769,23 @@ exports.updateLead = async (req, res, next) => {
     }
     if (existingSoftwareUsed !== undefined) updates.existingSoftwareUsed = existingSoftwareUsed;
     if (softwareName !== undefined) updates.softwareName = softwareName;
+
+    const rawTemp = leadTemperature !== undefined ? leadTemperature : temperature;
+    if (rawTemp) {
+      const normalizedTemp = rawTemp.trim().charAt(0).toUpperCase() + rawTemp.trim().slice(1).toLowerCase();
+      updates.leadTemperature = normalizedTemp;
+      updates.temperatureUpdatedBy = req.userId;
+      updates.temperatureUpdatedByName = updaterName;
+      updates.temperatureUpdatedAt = new Date();
+    }
+    if (disposition !== undefined && disposition) {
+      const cleanDisp = disposition.trim();
+      updates.disposition = cleanDisp;
+      updates.latestDisposition = cleanDisp;
+      updates.dispositionUpdatedBy = req.userId;
+      updates.dispositionUpdatedByName = updaterName;
+      updates.dispositionUpdatedAt = new Date();
+    }
 
     // Support updating verified hospital coordinates
     const rawHosp = (req.body.hospitalCoordinates && typeof req.body.hospitalCoordinates === 'object') ? req.body.hospitalCoordinates : {};
@@ -1789,4 +1858,109 @@ exports.deleteLead = async (req, res, next) => {
     next(err);
   }
 };
-
+
+exports.updateClassification = async (req, res, next) => {
+  try {
+    const leadId = req.params.id;
+    const lead = await Lead.findById(leadId);
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+
+    const isAdmin = req.userRole === 'ADMIN' || req.user?.role?.toUpperCase() === 'ADMIN' || (req.agentRole && req.agentRole.toLowerCase() === 'admin');
+    const hasAccess = await canAccessLead(lead, req.userId, req.userRole, req.agentRole);
+    if (!isAdmin && !hasAccess) {
+      return res.status(403).json({ message: 'Forbidden: You do not have permission to update this lead' });
+    }
+
+    const { leadTemperature, temperature, disposition, remark } = req.body;
+    const updaterName = req.user?.fullName || req.user?.username || 'Agent';
+
+    const prevTemp = lead.leadTemperature;
+    const prevDisp = lead.disposition || lead.latestDisposition;
+
+    let rawTemp = leadTemperature !== undefined ? leadTemperature : temperature;
+    if (rawTemp) {
+      rawTemp = rawTemp.trim();
+      const normalizedTemp = rawTemp.charAt(0).toUpperCase() + rawTemp.slice(1).toLowerCase();
+      lead.leadTemperature = normalizedTemp;
+      lead.temperatureUpdatedBy = req.userId;
+      lead.temperatureUpdatedByName = updaterName;
+      lead.temperatureUpdatedAt = new Date();
+
+      if (!lead.temperatureHistory) lead.temperatureHistory = [];
+      lead.temperatureHistory.push({
+        temperature: normalizedTemp,
+        previousTemperature: prevTemp || null,
+        changedBy: req.userId,
+        changedByName: updaterName,
+        changedAt: new Date(),
+        source: 'Action',
+        remark: remark || `Temperature updated to "${normalizedTemp}" via Action`,
+      });
+    }
+
+    if (disposition) {
+      const cleanDisp = disposition.trim();
+      lead.disposition = cleanDisp;
+      lead.latestDisposition = cleanDisp;
+      lead.dispositionUpdatedBy = req.userId;
+      lead.dispositionUpdatedByName = updaterName;
+      lead.dispositionUpdatedAt = new Date();
+
+      if (cleanDisp.toLowerCase() === 'won' && lead.closureStatus !== 'WON') {
+        lead.closureStatus = 'WON';
+        lead.status = 'WON';
+        lead.closedBy = req.userId;
+        lead.closedAt = new Date();
+      } else if (cleanDisp.toLowerCase() === 'lost' && lead.closureStatus !== 'LOST') {
+        lead.closureStatus = 'LOST';
+        lead.status = 'LOST';
+        lead.closedBy = req.userId;
+        lead.closedAt = new Date();
+      }
+    }
+
+    if (remark) {
+      lead.latestRemark = remark.trim();
+    }
+
+    lead.updatedBy = req.userId;
+    lead.updatedByName = updaterName;
+    await lead.save();
+
+    // Create activity record
+    await LeadActivity.create({
+      lead: lead._id,
+      action: 'Temperature & Disposition Updated',
+      performedBy: req.userId,
+      role: req.userRole || req.agentRole || 'AGENT',
+      details: `Lead classified as "${lead.leadTemperature || '—'}" with disposition "${lead.disposition || '—'}"`,
+      metadata: {
+        leadTemperature: lead.leadTemperature,
+        disposition: lead.disposition,
+        previousTemperature: prevTemp,
+        previousDisposition: prevDisp,
+        remark: remark || undefined,
+        updatedByName: updaterName,
+      },
+    });
+
+    const classification = classifyLead(lead);
+    const effectiveTemp = lead.leadTemperature || classification.temperature;
+
+    res.json({
+      message: 'Lead temperature and disposition updated successfully',
+      lead: {
+        ...lead.toObject(),
+        classification: {
+          ...classification,
+          classification: effectiveTemp || classification.classification,
+          temperature: effectiveTemp,
+        },
+        temperature: effectiveTemp,
+        leadTemperature: effectiveTemp,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};

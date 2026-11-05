@@ -53,6 +53,7 @@ const validateDeviceName = (val) => {
 };
 
 exports.createLead = [
+  body('leadTemperature').optional({ nullable: true }).trim(),
   body('organizationName').trim().notEmpty().withMessage('organizationName is required'),
   body('leadSource').trim().notEmpty().withMessage('leadSource is required'),
   body('contacts').isArray({ min: 1 }).withMessage('At least one contact is required'),
@@ -78,6 +79,8 @@ exports.createLead = [
 ];
 
 exports.updateLead = [
+  body('leadTemperature').optional().trim(),
+  body('disposition').optional().trim(),
   body('organizationName').optional().trim().notEmpty().withMessage('organizationName cannot be empty'),
   body('leadSource').optional().trim().notEmpty().withMessage('leadSource cannot be empty'),
   body('contacts').optional().isArray({ min: 1 }).withMessage('At least one contact is required when updating contacts'),

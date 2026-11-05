@@ -58,6 +58,10 @@ router.post('/:id/transfer-request', authenticate, require('../controllers/trans
 // Update lead
 router.put('/:id', authenticate, authorizeRole(['ADMIN', 'AGENT']), leadValidator.updateLead, validate, leadCtrl.updateLead);
 
+// Lead Temperature and Disposition classification
+router.patch('/:id/classification', authenticate, authorizeRole(['ADMIN', 'AGENT']), leadCtrl.updateClassification);
+router.post('/:id/classification', authenticate, authorizeRole(['ADMIN', 'AGENT']), leadCtrl.updateClassification);
+
 // Close lead as Won or Lost / Set Outcome
 router.post('/:id/close-won', authenticate, leadCtrl.closeWon);
 router.post('/:id/close-lost', authenticate, leadCtrl.closeLost);

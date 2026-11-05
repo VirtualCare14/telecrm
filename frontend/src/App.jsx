@@ -18,38 +18,41 @@ import LandingPage from './pages/LandingPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import AdminRoute from './components/AdminRoute';
 import AppLayout from './layouts/AppLayout';
+import { HospitalDetailProvider } from './context/HospitalDetailContext';
 
 export default function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/unauthorized" element={<Unauthorized />} />
+      <HospitalDetailProvider>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/unauthorized" element={<Unauthorized />} />
 
-        {/* Protected routes with sidebar layout */}
-        <Route element={<ProtectedRoute />}>
-          {/* Admin only */}
-          <Route element={<AdminRoute />}>
-            <Route path="/admin" element={<AppLayout><AdminDashboard /></AppLayout>} />
-            <Route path="/admin/agents" element={<AppLayout><AdminAgents /></AppLayout>} />
-            <Route path="/admin/roles" element={<AppLayout><AdminRoles /></AppLayout>} />
-            <Route path="/admin/reports" element={<AppLayout><AdminReports /></AppLayout>} />
-            <Route path="/reports" element={<Navigate to="/admin/reports" replace />} />
+          {/* Protected routes with sidebar layout */}
+          <Route element={<ProtectedRoute />}>
+            {/* Admin only */}
+            <Route element={<AdminRoute />}>
+              <Route path="/admin" element={<AppLayout><AdminDashboard /></AppLayout>} />
+              <Route path="/admin/agents" element={<AppLayout><AdminAgents /></AppLayout>} />
+              <Route path="/admin/roles" element={<AppLayout><AdminRoles /></AppLayout>} />
+              <Route path="/admin/reports" element={<AppLayout><AdminReports /></AppLayout>} />
+              <Route path="/reports" element={<Navigate to="/admin/reports" replace />} />
+            </Route>
+
+            {/* Shared routes (Admin + Agent) */}
+            <Route path="/agent" element={<AppLayout><AgentDashboard /></AppLayout>} />
+            <Route path="/agent/leads" element={<AppLayout><AgentDashboard /></AppLayout>} />
+            <Route path="/leads" element={<AppLayout><Leads /></AppLayout>} />
+            <Route path="/leads/create" element={<AppLayout><CreateLead /></AppLayout>} />
+            <Route path="/leads/:id" element={<AppLayout><LeadDetails /></AppLayout>} />
+            <Route path="/transfer-requests" element={<AppLayout><TransferRequests /></AppLayout>} />
           </Route>
 
-          {/* Shared routes (Admin + Agent) */}
-          <Route path="/agent" element={<AppLayout><AgentDashboard /></AppLayout>} />
-          <Route path="/agent/leads" element={<AppLayout><AgentDashboard /></AppLayout>} />
-          <Route path="/leads" element={<AppLayout><Leads /></AppLayout>} />
-          <Route path="/leads/create" element={<AppLayout><CreateLead /></AppLayout>} />
-          <Route path="/leads/:id" element={<AppLayout><LeadDetails /></AppLayout>} />
-          <Route path="/transfer-requests" element={<AppLayout><TransferRequests /></AppLayout>} />
-        </Route>
-
-        <Route path="/" element={<LandingPage />} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
+          <Route path="/" element={<LandingPage />} />
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </HospitalDetailProvider>
     </ThemeProvider>
   );
 }

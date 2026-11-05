@@ -9,7 +9,7 @@ import {
   KeyboardArrowDown, Delete as DeleteIcon, Visibility, PhoneInTalk,
   Schedule, DirectionsWalk, Event as EventIcon, AssignmentInd,
   PersonAdd, SwapHoriz, EmojiEvents, Cancel, WarningAmber,
-  WhatsApp as WhatsAppIcon
+  WhatsApp as WhatsAppIcon, Whatshot
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -17,9 +17,12 @@ import { formatDateTime } from '../utils/dateHelpers';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { deleteLead } from '../services/leadsService';
 import { classifyLead } from '../utils/leadScoring';
+import { useHospitalDetail } from '../context/HospitalDetailContext';
+import LeadActionModal from './LeadActionModal';
 
-export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead }) {
+export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead, onLeadUpdated }) {
   const navigate = useNavigate();
+  const { openHospitalDetail } = useHospitalDetail();
   const user = useAuthStore((s) => s.user);
   const isAdmin = Boolean(
     user?.role?.toUpperCase() === 'ADMIN' ||
@@ -30,6 +33,10 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
   // Action Menu state
   const [actionMenuAnchorEl, setActionMenuAnchorEl] = useState(null);
   const [actionMenuLead, setActionMenuLead] = useState(null);
+
+  // Lead Action / Temperature Modal state
+  const [actionModalOpen, setActionModalOpen] = useState(false);
+  const [actionLead, setActionLead] = useState(null);
 
   // Delete Dialog state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -53,7 +60,10 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
     handleCloseActionMenu();
     if (!targetLead) return;
 
-    if (actionKey === 'delete_lead') {
+    if (actionKey === 'lead_action') {
+      setActionLead(targetLead);
+      setActionModalOpen(true);
+    } else if (actionKey === 'delete_lead') {
       if (onDeleteLead) {
         onDeleteLead(targetLead);
       } else {
@@ -62,7 +72,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
         setDeleteDialogOpen(true);
       }
     } else if (actionKey === 'view_lead') {
-      navigate(`/leads/${targetLead._id}`);
+      openHospitalDetail(targetLead._id, targetLead);
     } else {
       navigate(`/leads/${targetLead._id}?action=${actionKey}`);
     }
@@ -89,6 +99,8 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
 
   const renderActionMenuIcon = (key) => {
     switch (key) {
+      case 'lead_action':
+        return <Whatshot sx={{ fontSize: 16, color: '#ea580c' }} />;
       case 'log_call':
         return <PhoneInTalk sx={{ fontSize: 16, color: '#0284c7' }} />;
       case 'schedule_followup':
@@ -124,7 +136,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
     }
   };
 
-  const colCount = isAdmin ? 11 : 10;
+  const colCount = 11;
 
   if (loading) {
     return (
@@ -135,7 +147,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
               {['Lead #', 'Organization', 'Primary Contact', 'Phone', 'Source', 'Latest Disposition', 'Follow-up', 'Owner', 'Status', 'Temperature'].map((h) => (
                 <TableCell key={h} sx={{ fontWeight: 600 }}>{h}</TableCell>
               ))}
-              {isAdmin && <TableCell align="center" sx={{ fontWeight: 600 }}>Action</TableCell>}
+              <TableCell align="center" sx={{ fontWeight: 600 }}>Action</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -168,9 +180,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
               <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Owner</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Status</TableCell>
               <TableCell sx={{ fontWeight: 600, fontSize: 13 }}>Temperature</TableCell>
-              {isAdmin && (
-                <TableCell align="center" sx={{ fontWeight: 600, fontSize: 13 }}>Action</TableCell>
-              )}
+              <TableCell align="center" sx={{ fontWeight: 600, fontSize: 13 }}>Action</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -189,7 +199,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
                   key={l._id}
                   hover
                   sx={{ cursor: 'pointer', '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.04)' } }}
-                  onClick={() => navigate(`/leads/${l._id}`)}
+                  onClick={() => openHospitalDetail(l._id, l)}
                 >
                   <TableCell>
                     <Typography fontWeight={600} fontSize={13}>
@@ -265,7 +275,7 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
                         clickable
                         onClick={(e) => {
                           e.stopPropagation();
-                          navigate(`/leads/${l._id}`);
+                          openHospitalDetail(l._id, l);
                         }}
                         sx={{ height: 22, fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
                       />
@@ -277,132 +287,106 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
                         clickable
                         onClick={(e) => {
                           e.stopPropagation();
-                          navigate(`/leads/${l._id}`);
+                          openHospitalDetail(l._id, l);
                         }}
                         sx={{ height: 22, fontSize: 11, cursor: 'pointer' }}
                       />
                     )}
                   </TableCell>
-                  <TableCell>
+                  <TableCell onClick={(e) => e.stopPropagation()}>
                     {(() => {
-                      const classification = l.classification || classifyLead(l);
-                      if (classification.isTerminal) {
+                      const rawTemp = l.leadTemperature;
+                      if (!rawTemp) {
                         return (
-                          <Tooltip
-                            arrow
-                            title={
-                              <Box sx={{ p: 0.5 }}>
-                                <Typography variant="caption" fontWeight={700} sx={{ display: 'block', mb: 0.5 }}>
-                                  {classification.scoreLabel}
-                                </Typography>
-                                {classification.reasons.map((r, idx) => (
-                                  <Typography key={idx} variant="caption" sx={{ display: 'block', fontSize: 11, color: 'text.secondary' }}>
-                                    • {r}
-                                  </Typography>
-                                ))}
-                              </Box>
-                            }
-                          >
-                            <Typography sx={{ fontSize: 12, color: 'text.secondary', cursor: 'help' }}>—</Typography>
-                          </Tooltip>
-                        );
-                      }
-
-                      const { badge, score, scoreLabel, indicator, reasons } = classification;
-                      return (
-                        <Tooltip
-                          arrow
-                          componentsProps={{
-                            tooltip: {
-                              sx: {
-                                bgcolor: '#0f172a',
-                                color: '#f8fafc',
-                                boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-                                borderRadius: 2,
-                                p: 1.5,
-                                maxWidth: 320,
-                              }
-                            }
-                          }}
-                          title={
-                            <Box>
-                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.75, pb: 0.75, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
-                                <Typography variant="subtitle2" fontWeight={700} sx={{ color: badge.color, display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                  {badge.label === 'Hot' ? '🔥 Hot Lead' : badge.label === 'Warm' ? '⚡ Warm Lead' : '❄️ Cold Lead'}
-                                </Typography>
-                                <Chip
-                                  label={`${score}/100`}
-                                  size="small"
-                                  sx={{ height: 18, fontSize: 10, fontWeight: 700, bgcolor: badge.bg, color: badge.color, border: `1px solid ${badge.border}` }}
-                                />
-                              </Box>
-                              <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mb: 1, fontStyle: 'italic' }}>
-                                {indicator}
-                              </Typography>
-                              <Typography variant="caption" fontWeight={700} sx={{ color: '#e2e8f0', display: 'block', mb: 0.5 }}>
-                                Scoring Reasons:
-                              </Typography>
-                              <Box sx={{ pl: 0.5 }}>
-                                {reasons.map((reason, idx) => (
-                                  <Typography key={idx} variant="caption" sx={{ display: 'block', fontSize: 11, color: '#cbd5e1', mb: 0.25 }}>
-                                    • {reason}
-                                  </Typography>
-                                ))}
-                              </Box>
-                            </Box>
-                          }
-                        >
                           <Chip
-                            label={
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
-                                <span>{badge.label === 'Hot' ? '🔥' : badge.label === 'Warm' ? '⚡' : '❄️'}</span>
-                                <span>{badge.label}</span>
-                                <span style={{ opacity: 0.75, fontSize: 10 }}>({score})</span>
-                              </Box>
-                            }
+                            label="Unclassified"
                             size="small"
+                            clickable
+                            onClick={() => {
+                              setActionLead(l);
+                              setActionModalOpen(true);
+                            }}
+                            title="Click to classify lead temperature"
                             sx={{
                               height: 22,
                               fontSize: 11,
-                              fontWeight: 700,
-                              bgcolor: badge.bg,
-                              color: badge.color,
-                              border: `1px solid ${badge.border}`,
-                              cursor: 'help',
+                              fontWeight: 600,
+                              bgcolor: '#f1f5f9',
+                              color: '#64748b',
+                              border: '1px dashed #cbd5e1',
+                              cursor: 'pointer',
                               borderRadius: 1.5,
+                              '&:hover': {
+                                bgcolor: 'rgba(234, 88, 12, 0.08)',
+                                borderColor: '#ea580c',
+                                color: '#ea580c',
+                              },
                             }}
                           />
-                        </Tooltip>
+                        );
+                      }
+
+                      const norm = rawTemp.charAt(0).toUpperCase() + rawTemp.slice(1).toLowerCase();
+                      const isHot = norm === 'Hot';
+                      const isWarm = norm === 'Warm';
+                      const isCold = norm === 'Cold';
+                      const label = isHot ? '🔥 Hot' : isWarm ? '🟠 Warm' : isCold ? '❄️ Cold' : norm;
+                      const color = isHot ? '#b91c1c' : isWarm ? '#c2410c' : isCold ? '#0369a1' : '#64748b';
+                      const bg = isHot ? 'rgba(239, 68, 68, 0.12)' : isWarm ? 'rgba(234, 88, 12, 0.12)' : isCold ? 'rgba(2, 132, 199, 0.12)' : 'rgba(100, 116, 139, 0.12)';
+                      const border = isHot ? 'rgba(239, 68, 68, 0.3)' : isWarm ? 'rgba(234, 88, 12, 0.3)' : isCold ? 'rgba(2, 132, 199, 0.3)' : 'rgba(100, 116, 139, 0.3)';
+
+                      return (
+                        <Chip
+                          label={label}
+                          size="small"
+                          clickable
+                          onClick={() => {
+                            setActionLead(l);
+                            setActionModalOpen(true);
+                          }}
+                          title="Click to update classification"
+                          sx={{
+                            height: 22,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            bgcolor: bg,
+                            color: color,
+                            border: `1px solid ${border}`,
+                            cursor: 'pointer',
+                            borderRadius: 1.5,
+                            '&:hover': {
+                              opacity: 0.85,
+                            },
+                          }}
+                        />
                       );
                     })()}
                   </TableCell>
-                  {isAdmin && (
-                    <TableCell align="center" onClick={(e) => e.stopPropagation()}>
-                      <Button
-                        size="small"
-                        variant="contained"
-                        endIcon={<KeyboardArrowDown sx={{ fontSize: 15 }} />}
-                        onClick={(e) => handleOpenActionMenu(e, l)}
-                        sx={{
-                          borderRadius: 1.5,
-                          textTransform: 'none',
-                          fontSize: 12,
-                          fontWeight: 700,
-                          py: 0.4,
-                          px: 1.5,
-                          bgcolor: 'primary.main',
-                          color: '#ffffff',
-                          boxShadow: '0 2px 6px rgba(234, 88, 12, 0.25)',
-                          '&:hover': {
-                            bgcolor: 'primary.dark',
-                            boxShadow: '0 4px 10px rgba(234, 88, 12, 0.35)',
-                          },
-                        }}
-                      >
-                        Action
-                      </Button>
-                    </TableCell>
-                  )}
+                  <TableCell align="center" onClick={(e) => e.stopPropagation()}>
+                    <Button
+                      size="small"
+                      variant="contained"
+                      endIcon={<KeyboardArrowDown sx={{ fontSize: 15 }} />}
+                      onClick={(e) => handleOpenActionMenu(e, l)}
+                      sx={{
+                        borderRadius: 1.5,
+                        textTransform: 'none',
+                        fontSize: 12,
+                        fontWeight: 700,
+                        py: 0.4,
+                        px: 1.5,
+                        bgcolor: 'primary.main',
+                        color: '#ffffff',
+                        boxShadow: '0 2px 6px rgba(234, 88, 12, 0.25)',
+                        '&:hover': {
+                          bgcolor: 'primary.dark',
+                          boxShadow: '0 4px 10px rgba(234, 88, 12, 0.35)',
+                        },
+                      }}
+                    >
+                      Action
+                    </Button>
+                  </TableCell>
                 </TableRow>
               );
             })}
@@ -583,6 +567,16 @@ export default function LeadTable({ leads, loading, onLeadDeleted, onDeleteLead 
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Direct Lead Action & Classification Modal */}
+      <LeadActionModal
+        open={actionModalOpen}
+        onClose={() => setActionModalOpen(false)}
+        lead={actionLead}
+        onUpdated={(updatedLead) => {
+          if (onLeadUpdated) onLeadUpdated(updatedLead);
+        }}
+      />
     </>
   );
 }

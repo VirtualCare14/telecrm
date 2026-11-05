@@ -14,6 +14,7 @@ import {
   Person, EventNote, Map, Visibility
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
+import { useHospitalDetail } from '../context/HospitalDetailContext';
 import { getActivityHospitals, downloadActivityHospitalsExport } from '../services/dashboardService';
 import { getAgents } from '../services/agentService';
 
@@ -53,6 +54,7 @@ export default function HospitalActivityReportSection({
   agents: propAgents = []
 }) {
   const navigate = useNavigate();
+  const { openHospitalDetail } = useHospitalDetail();
 
   // 1. Filter States
   const [dateMode, setDateMode] = useState('single'); // 'single' | 'month' | 'custom'
@@ -880,7 +882,7 @@ export default function HospitalActivityReportSection({
                         <Typography
                           variant="body2"
                           fontWeight={700}
-                          onClick={() => row.leadId && navigate(`/leads/${row.leadId}`)}
+                          onClick={() => row.leadId && openHospitalDetail(row.leadId, row)}
                           sx={{
                             color: row.leadId ? 'primary.main' : 'text.primary',
                             cursor: row.leadId ? 'pointer' : 'default',
@@ -902,7 +904,7 @@ export default function HospitalActivityReportSection({
                           label={row.leadNumber || 'N/A'}
                           size="small"
                           variant="outlined"
-                          onClick={() => row.leadId && navigate(`/leads/${row.leadId}`)}
+                          onClick={() => row.leadId && openHospitalDetail(row.leadId, row)}
                           sx={{
                             fontFamily: 'monospace',
                             fontWeight: 700,
@@ -1032,7 +1034,7 @@ export default function HospitalActivityReportSection({
                           <Tooltip title="Open Lead Details">
                             <IconButton
                               size="small"
-                              onClick={() => navigate(`/leads/${row.leadId}`)}
+                              onClick={() => row.leadId && openHospitalDetail(row.leadId, row)}
                               sx={{
                                 color: 'primary.main',
                                 bgcolor: 'rgba(234, 88, 12, 0.08)',

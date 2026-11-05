@@ -325,7 +325,7 @@ export default function LiveCameraCapture({
                 </Typography>
               </Box>
               <Typography variant="caption" sx={{ color: '#cbd5e1', fontSize: 11 }}>
-                Captured: {capturedTimestamp ? capturedTimestamp.toLocaleTimeString() : 'Just now'}
+                Captured: {capturedTimestamp ? capturedTimestamp.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }) : 'Just now'}
               </Typography>
             </Box>
           </Box>

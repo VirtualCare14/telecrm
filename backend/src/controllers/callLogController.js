@@ -10,7 +10,7 @@ exports.createCallLog = async (req, res, next) => {
   session.startTransaction();
   try {
     const leadId = req.params.id;
-    const { calledContactId, calledAt, disposition, remark, followUpAt, existingSoftwareUsed, softwareName } = req.body;
+    const { calledContactId, calledAt, disposition, remark, followUpAt, existingSoftwareUsed, softwareName, leadTemperature } = req.body;
 
     const lead = await Lead.findById(leadId).session(session);
     if (!lead) {
@@ -70,6 +70,10 @@ exports.createCallLog = async (req, res, next) => {
     }
 
     const calledAtVal = calledAt ? new Date(calledAt) : new Date();
+    const normalizedTemp = leadTemperature
+      ? (leadTemperature.trim().charAt(0).toUpperCase() + leadTemperature.trim().slice(1).toLowerCase())
+      : undefined;
+
     const call = await CallLog.create([{
       lead: leadId,
       user: req.userId,
@@ -78,6 +82,7 @@ exports.createCallLog = async (req, res, next) => {
       disposition,
       remark,
       followUpAt: followUpAt ? new Date(followUpAt) : undefined,
+      leadTemperature: normalizedTemp,
     }], { session });
 
     const callDoc = call[0];
@@ -86,11 +91,43 @@ exports.createCallLog = async (req, res, next) => {
     const callerName = req.user?.fullName || req.user?.username || 'Agent';
     const update = {
       latestDisposition: disposition,
+      disposition,
+      dispositionUpdatedBy: req.userId,
+      dispositionUpdatedByName: callerName,
+      dispositionUpdatedAt: new Date(),
       latestRemark: remark,
       lastCalledAt: calledAtVal,
       updatedBy: req.userId,
       updatedByName: callerName,
     };
+    if (normalizedTemp) {
+      update.leadTemperature = normalizedTemp;
+      update.temperatureUpdatedBy = req.userId;
+      update.temperatureUpdatedByName = callerName;
+      update.temperatureUpdatedAt = new Date();
+
+      if (!update.$push) update.$push = {};
+      update.$push.temperatureHistory = {
+        temperature: normalizedTemp,
+        previousTemperature: lead.leadTemperature || null,
+        changedBy: req.userId,
+        changedByName: callerName,
+        changedAt: new Date(),
+        source: 'Call Log',
+        remark: remark || `Temperature updated to "${normalizedTemp}" via Call Log`,
+      };
+    }
+    if (disposition && disposition.toLowerCase() === 'won' && lead.closureStatus !== 'WON') {
+      update.closureStatus = 'WON';
+      update.status = 'WON';
+      update.closedBy = req.userId;
+      update.closedAt = new Date();
+    } else if (disposition && disposition.toLowerCase() === 'lost' && lead.closureStatus !== 'LOST') {
+      update.closureStatus = 'LOST';
+      update.status = 'LOST';
+      update.closedBy = req.userId;
+      update.closedAt = new Date();
+    }
     if (followUpAt) update.nextFollowUpAt = new Date(followUpAt);
     if (existingSoftwareUsed) update.existingSoftwareUsed = existingSoftwareUsed;
     if (softwareName) update.softwareName = softwareName;
@@ -103,7 +140,14 @@ exports.createCallLog = async (req, res, next) => {
       action: 'Call Log Added',
       performedBy: req.userId,
       role: req.userRole,
-      metadata: { callLogId: callDoc._id.toString(), disposition, remark, followUpAt, callerName },
+      metadata: { 
+        callLogId: callDoc._id.toString(), 
+        disposition, 
+        remark, 
+        followUpAt, 
+        callerName, 
+        leadTemperature: normalizedTemp 
+      },
     }], { session });
 
     await session.commitTransaction();

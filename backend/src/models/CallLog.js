@@ -7,6 +7,7 @@ const callLogSchema = new mongoose.Schema({
   calledAt: { type: Date, required: true },
   disposition: { type: String, required: true },
   remark: { type: String, required: true },
+  leadTemperature: { type: String, default: null },
   followUpAt: { type: Date },
 }, { timestamps: true });
 

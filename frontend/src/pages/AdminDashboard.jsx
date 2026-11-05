@@ -7,7 +7,8 @@ import {
   Business, CalendarMonth, Warning, People, CheckCircle, Cancel,
   FilterList, PersonOff, PersonAdd, PhoneInTalk, EventRepeat,
   OndemandVideo, TaskAlt, DirectionsWalk, CheckCircleOutline,
-  WarningAmber, Insights, AssessmentOutlined, FileDownload
+  WarningAmber, Insights, AssessmentOutlined, FileDownload,
+  Whatshot, AcUnit
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import KpiCard from '../components/dashboard/KpiCard';
@@ -143,6 +144,15 @@ export default function AdminDashboard() {
     fetchAgents();
     fetchRecentLeads();
   }, [fetchDashboard, fetchAgents, fetchRecentLeads, location.key, location.state]);
+
+  useEffect(() => {
+    const onLeadUpdate = () => {
+      fetchDashboard();
+      fetchRecentLeads();
+    };
+    window.addEventListener('telecrm:lead-updated', onLeadUpdate);
+    return () => window.removeEventListener('telecrm:lead-updated', onLeadUpdate);
+  }, [fetchDashboard, fetchRecentLeads]);
 
   // Automatic cross-agent synchronization: 30s background polling & window focus refresh
   useEffect(() => {
@@ -626,89 +636,179 @@ export default function AdminDashboard() {
         </Grid>
       </Paper>
 
-      {/* KPI Cards */}
+      {/* Summary Section — Total Leads and Temperature Summary Cards */}
       <Grid container spacing={2} sx={{ mb: 3 }}>
-        {[
-          // First row: Total Leads, Unassigned Leads, Total Agents, Won Leads
-          { title: 'Total Leads', value: kpis?.totalLeads, icon: <Business />, color: '#ea580c', onClick: () => navigateToLeads({}), md: 3 },
-          { title: 'Unassigned Leads', value: kpis?.unassignedLeads, icon: <PersonOff />, color: '#ec4899', onClick: () => navigateToLeads({ unassigned: 'true' }), md: 3 },
-          { title: 'Total Agents', value: kpis?.totalAgents, icon: <People />, color: '#a78bfa', onClick: () => navigate('/admin/agents'), md: 3 },
-          { title: 'Won Leads', value: kpis?.totalWon, icon: <CheckCircle />, color: '#10b981', onClick: () => navigateToLeads({ closureStatus: 'WON' }), md: 3 },
-          // Second row: Upcoming Follow-ups, Overdue Follow-ups, Lost Leads
-          { title: 'Upcoming Follow-ups', value: kpis?.upcomingFollowups, icon: <CalendarMonth />, color: '#38bdf8', onClick: () => navigateToLeads({ followUpType: 'upcoming' }), md: 4 },
-          { title: 'Overdue Follow-ups', value: kpis?.overdueFollowups, icon: <Warning />, color: '#f97316', onClick: () => navigateToLeads({ followUpType: 'overdue' }), md: 4 },
-          { title: 'Lost Leads', value: kpis?.totalLost, icon: <Cancel />, color: '#ef4444', onClick: () => navigateToLeads({ closureStatus: 'LOST' }), md: 4 }
-        ].map((kpi, idx) => (
-          <Grid item xs={12} sm={6} md={kpi.md} key={idx}>
-            <Paper
-              elevation={0}
-              sx={{
-                p: 3,
-                borderRadius: 3,
-                border: '1px solid',
-                borderColor: 'divider',
-                cursor: 'pointer',
-                transition: 'all 0.3s',
-                position: 'relative',
-                overflow: 'hidden',
-                '&:hover': {
-                  transform: 'translateY(-4px)',
-                  boxShadow: `0 8px 24px ${kpi.color}25`,
-                  borderColor: kpi.color,
-                  '&::before': {
-                    opacity: 0.08
-                  }
-                },
-                '&::before': {
-                  content: '""',
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  background: kpi.color,
-                  opacity: 0,
-                  transition: 'opacity 0.3s'
-                }
-              }}
-              onClick={kpi.onClick}
-            >
-              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', position: 'relative', zIndex: 1 }}>
-                <Box sx={{ flex: 1 }}>
-                  <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500, fontSize: 13 }}>
-                    {kpi.title}
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigateToLeads({})}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(234, 88, 12, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(234, 88, 12, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(234, 88, 12, 0.16)',
+                borderColor: '#ea580c',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  Total Leads
+                </Typography>
+                {loading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#ea580c', lineHeight: 1.1 }}>
+                    {kpis?.totalLeads ?? 0}
                   </Typography>
-                  {loading ? (
-                    <Skeleton width={80} height={40} />
-                  ) : (
-                    <Typography variant="h3" fontWeight={700} sx={{ color: kpi.color, lineHeight: 1.2 }}>
-                      {kpi.value ?? '—'}
-                    </Typography>
-                  )}
-                </Box>
-                <Box
-                  sx={{
-                    width: 56,
-                    height: 56,
-                    borderRadius: 2.5,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    bgcolor: `${kpi.color}15`,
-                    color: kpi.color,
-                    transition: 'all 0.3s',
-                    '&:hover': {
-                      transform: 'scale(1.1)',
-                      bgcolor: `${kpi.color}25`
-                    }
-                  }}
-                >
-                  {React.cloneElement(kpi.icon, { sx: { fontSize: 28 } })}
-                </Box>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  All accessible leads
+                </Typography>
               </Box>
-            </Paper>
-          </Grid>
-        ))}
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#ea580c', flexShrink: 0 }}>
+                <Business sx={{ fontSize: 26 }} />
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigateToLeads({ temperature: 'Hot' })}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(239, 68, 68, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(239, 68, 68, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(239, 68, 68, 0.16)',
+                borderColor: '#dc2626',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  🔥 Hot Leads
+                </Typography>
+                {loading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#dc2626', lineHeight: 1.1 }}>
+                    {kpis?.hotLeads ?? 0}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  High purchase intent
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', flexShrink: 0 }}>
+                <Whatshot sx={{ fontSize: 26 }} />
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigateToLeads({ temperature: 'Warm' })}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(234, 88, 12, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(234, 88, 12, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(234, 88, 12, 0.16)',
+                borderColor: '#c2410c',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  🟠 Warm Leads
+                </Typography>
+                {loading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#c2410c', lineHeight: 1.1 }}>
+                    {kpis?.warmLeads ?? 0}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  Engaged / Follow-up
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#c2410c', flexShrink: 0 }}>
+                <Typography sx={{ fontSize: 22, lineHeight: 1 }}>🟠</Typography>
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigateToLeads({ temperature: 'Cold' })}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(2, 132, 199, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(2, 132, 199, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(2, 132, 199, 0.16)',
+                borderColor: '#0284c7',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  ❄️ Cold Leads
+                </Typography>
+                {loading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#0284c7', lineHeight: 1.1 }}>
+                    {kpis?.coldLeads ?? 0}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  Low engagement
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(2, 132, 199, 0.1)', color: '#0284c7', flexShrink: 0 }}>
+                <AcUnit sx={{ fontSize: 26 }} />
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
       </Grid>
 
       {/* Agent Performance */}

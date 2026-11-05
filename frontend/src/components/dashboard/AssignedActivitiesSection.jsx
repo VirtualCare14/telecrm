@@ -207,7 +207,7 @@ const formatAssignedOn = (dateInput) => {
   }) + ', ' + d.toLocaleTimeString('en-IN', {
     hour: '2-digit',
     minute: '2-digit',
-    hour12: true,
+    hour12: false,
   });
 };
 
@@ -249,6 +249,7 @@ export default function AssignedActivitiesSection({
   onOpenOutcome,
   navigate,
 }) {
+  const { openHospitalDetail } = useHospitalDetail();
   const [activeTab, setActiveTab] = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -812,7 +813,7 @@ export default function AssignedActivitiesSection({
                           : 'rgba(241, 245, 249, 0.6)',
                       },
                     }}
-                    onClick={() => navigate(`/leads/${item.leadId}`)}
+                    onClick={() => openHospitalDetail(item.leadId, item)}
                   >
                     {/* 1. Lead / Organization */}
                     <TableCell sx={{ pl: { xs: 2, sm: 3 }, py: 1.5 }}>
@@ -883,7 +884,7 @@ export default function AssignedActivitiesSection({
                                 label="WhatsApp Sent"
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  navigate(`/leads/${item.leadId}`);
+                                  openHospitalDetail(item.leadId, item);
                                 }}
                                 sx={{
                                   height: 20,
@@ -973,7 +974,7 @@ export default function AssignedActivitiesSection({
                         {item.assignedOn ? new Date(item.assignedOn).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}
                       </Typography>
                       <Typography variant="caption" sx={{ color: '#64748b', fontSize: 11, display: 'block', mt: 0.25 }}>
-                        {item.assignedOn ? new Date(item.assignedOn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true }) : ''}
+                        {item.assignedOn ? new Date(item.assignedOn).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false }) : ''}
                       </Typography>
                     </TableCell>
 

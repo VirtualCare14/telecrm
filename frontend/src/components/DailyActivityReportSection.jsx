@@ -16,6 +16,7 @@ import {
 import { getDailyActivityReport, downloadDailyActivityExport } from '../services/dashboardService';
 import { generateDailyActivityPdf } from '../utils/dailyReportPdf';
 import { getAgents } from '../services/agentService';
+import { useHospitalDetail } from '../context/HospitalDetailContext';
 
 // Calculate Yesterday in Asia/Kolkata timezone
 function getYesterdayIST() {
@@ -32,7 +33,9 @@ function getTodayIST() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 }
 
-export default function DailyActivityReportSection({ selectedAgentId = '', selectedRole = 'all', agents: propAgents = [] }) {
+export default function DailyActivityReportSection({
+ selectedAgentId = '', selectedRole = 'all', agents: propAgents = [] }) {
+  const { openHospitalDetail } = useHospitalDetail();
   const [selectedDate, setSelectedDate] = useState(() => getYesterdayIST());
   const [activeRole, setActiveRole] = useState(selectedRole);
   const [activeAgentId, setActiveAgentId] = useState(selectedAgentId);
@@ -753,7 +756,16 @@ export default function DailyActivityReportSection({ selectedAgentId = '', selec
                         <TableCell sx={{ fontSize: 12, color: 'text.secondary' }}>
                           {(page - 1) * pageSize + idx + 1}
                         </TableCell>
-                        <TableCell sx={{ fontWeight: 600, fontSize: 13, color: 'text.primary' }}>
+                        <TableCell
+                          onClick={() => row.leadId && openHospitalDetail(row.leadId, row)}
+                          sx={{
+                            fontWeight: 600,
+                            fontSize: 13,
+                            color: row.leadId ? 'primary.main' : 'text.primary',
+                            cursor: row.leadId ? 'pointer' : 'default',
+                            '&:hover': row.leadId ? { textDecoration: 'underline' } : {},
+                          }}
+                        >
                           {row.hospitalName}
                           {row.leadNumber && row.leadNumber !== 'N/A' && (
                             <Typography variant="caption" color="text.secondary" display="block">

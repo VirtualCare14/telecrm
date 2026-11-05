@@ -17,6 +17,7 @@ import {
 } from '../services/transferService';
 import { getAgents } from '../services/agentService';
 import { listLeads } from '../services/leadsService';
+import { useHospitalDetail } from '../context/HospitalDetailContext';
 import { bulkTransferLeads } from '../services/adminService';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -34,6 +35,7 @@ export default function TransferRequests() {
   const [tab, setTab] = useState(0); // 0 = Transfer History, 1 = Incoming, 2 = Outgoing
   const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
+  const { openHospitalDetail } = useHospitalDetail();
 
   // Bulk transfer state (Admin only)
   const [agents, setAgents] = useState([]);
@@ -515,7 +517,7 @@ export default function TransferRequests() {
                                   cursor: 'pointer',
                                   '&:hover': { color: 'primary.main', textDecoration: 'underline' }
                                 }}
-                                onClick={() => navigate(`/leads/${item.leadId}`)}
+                                onClick={() => openHospitalDetail(item.leadId, item)}
                               >
                                 {item.organizationName || 'Unknown Lead'}
                               </Typography>

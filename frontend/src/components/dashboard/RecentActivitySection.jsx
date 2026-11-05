@@ -25,12 +25,16 @@ import {
   ChatBubbleOutline,
 } from '@mui/icons-material';
 import { formatDateTime } from '../../utils/dateHelpers';
+import { useHospitalDetail } from '../../context/HospitalDetailContext';
 
 export default function RecentActivitySection({
+  todayActions,
+
   activities = [],
   loading = false,
   navigate,
 }) {
+  const { openHospitalDetail } = useHospitalDetail();
   const getActivityIcon = (action = '') => {
     const act = action.toLowerCase();
     if (act.includes('call')) {
@@ -226,7 +230,7 @@ export default function RecentActivitySection({
                                 fontSize: 13,
                                 '&:hover': { color: 'primary.main' },
                               }}
-                              onClick={() => leadId && navigate(`/leads/${leadId}`)}
+                              onClick={() => leadId && openHospitalDetail(leadId, leadObj)}
                             >
                               <Typography fontWeight={600} fontSize={13} sx={{ color: 'inherit' }}>
                                 #{leadObj.leadNumber} • {leadObj.organizationName}

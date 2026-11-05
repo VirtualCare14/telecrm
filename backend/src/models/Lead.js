@@ -52,6 +52,29 @@ const leadSchema = new mongoose.Schema({
     deviceInstallationId: { type: String, default: null },
   },
   primaryContact: { type: mongoose.Schema.Types.ObjectId, ref: 'ContactPerson' },
+  leadTemperature: {
+    type: String,
+    enum: ['Hot', 'Warm', 'Cold', 'hot', 'warm', 'cold', null],
+    default: null,
+  },
+  disposition: { type: String, default: null },
+  temperatureUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  temperatureUpdatedByName: { type: String, default: null },
+  temperatureUpdatedAt: { type: Date, default: null },
+  dispositionUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  dispositionUpdatedByName: { type: String, default: null },
+  dispositionUpdatedAt: { type: Date, default: null },
+  temperatureHistory: [
+    {
+      temperature: { type: String, enum: ['Hot', 'Warm', 'Cold', 'hot', 'warm', 'cold', null] },
+      previousTemperature: { type: String, default: null },
+      changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      changedByName: { type: String, default: null },
+      changedAt: { type: Date, default: Date.now },
+      source: { type: String, default: 'Action' },
+      remark: { type: String, default: null },
+    }
+  ],
   latestDisposition: { type: String },
   latestRemark: { type: String },
   lastCalledAt: { type: Date },
@@ -149,6 +172,8 @@ leadSchema.index({ updatedBy: 1 });
 leadSchema.index({ organizationName: 1 });
 leadSchema.index({ nextFollowUpAt: 1 });
 leadSchema.index({ closureStatus: 1 });
+leadSchema.index({ leadTemperature: 1 });
+leadSchema.index({ disposition: 1 });
 leadSchema.index({ createdAt: -1 });
 leadSchema.index({ organizationName: 'text', leadNumber: 'text' });
 

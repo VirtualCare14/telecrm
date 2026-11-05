@@ -77,6 +77,8 @@ import {
   TaskAlt,
   CheckCircleOutline,
   FilterAlt,
+  Whatshot,
+  AcUnit,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -96,6 +98,7 @@ import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveSalesAgentForLead, resolveHospitalMapsLink } from '../utils/whatsappHelper';
 import KpiCard from '../components/dashboard/KpiCard';
 import TodayActionsSection from '../components/dashboard/TodayActionsSection';
+import { useHospitalDetail } from '../context/HospitalDetailContext';
 import RecentActivitySection from '../components/dashboard/RecentActivitySection';
 import AssignedActivitiesSection from '../components/dashboard/AssignedActivitiesSection';
 import DashboardActivityModal from '../components/DashboardActivityModal';
@@ -149,6 +152,7 @@ export default function AgentDashboard() {
   const user = useAuthStore((s) => s.user);
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const navigate = useNavigate();
+  const { openHospitalDetail } = useHospitalDetail();
   const location = useLocation();
 
   const agentName = user?.fullName || user?.username || 'Agent';
@@ -181,6 +185,7 @@ export default function AgentDashboard() {
   const [recordCallOpen, setRecordCallOpen] = useState(false);
   const [selectedLead, setSelectedLead] = useState(null);
   const [callDisposition, setCallDisposition] = useState('');
+  const [callTemperature, setCallTemperature] = useState('');
   const [callRemark, setCallRemark] = useState('');
   const [scheduleFollowUp, setScheduleFollowUp] = useState(false);
   const [followUpDate, setFollowUpDate] = useState('');
@@ -546,6 +551,7 @@ export default function AgentDashboard() {
     };
 
     window.addEventListener('focus', handleFocus);
+    window.addEventListener('telecrm:lead-updated', handleSync);
     document.addEventListener('visibilitychange', handleVisibilityChange);
 
     const intervalId = setInterval(() => {
@@ -554,6 +560,7 @@ export default function AgentDashboard() {
 
     return () => {
       window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('telecrm:lead-updated', handleSync);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       clearInterval(intervalId);
     };
@@ -586,6 +593,7 @@ export default function AgentDashboard() {
     defaultDisposition = ''
   ) => {
     setSelectedLead(lead);
+    setCallTemperature(lead?.leadTemperature || lead?.temperature || '');
     setCallDisposition(defaultDisposition || (prefillFollowUp ? 'Follow-up Required' : ''));
     setCallRemark('');
     setScheduleFollowUp(Boolean(prefillFollowUp));
@@ -647,6 +655,7 @@ export default function AgentDashboard() {
         calledContactId: selectedLead.primaryContact?._id,
         calledContactName: selectedLead.primaryContact?.name || selectedLead.organizationName || 'Primary Contact',
         disposition: callDisposition,
+        leadTemperature: callTemperature || undefined,
         remark: callRemark.trim(),
         followUpAt,
       });
@@ -952,7 +961,7 @@ export default function AgentDashboard() {
     } else if (nextAction.action === 'record_call') {
       handleOpenRecordCall(lead);
     } else {
-      navigate(`/leads/${lead._id}`);
+      openHospitalDetail(lead._id, lead);
     }
   };
 
@@ -981,7 +990,7 @@ export default function AgentDashboard() {
     } else if (actionType === 'record_call' || actionType === 'followup_now') {
       handleOpenRecordCall(lead);
     } else {
-      navigate(`/leads/${lead._id}`);
+      openHospitalDetail(lead._id, lead);
     }
   };
 
@@ -1414,7 +1423,7 @@ export default function AgentDashboard() {
         handleOpenOutcome(lead, 'LOST');
         break;
       case 'view_lead':
-        navigate(`/leads/${lead._id}`);
+        openHospitalDetail(lead._id, lead);
         break;
       default:
         break;
@@ -1599,6 +1608,31 @@ export default function AgentDashboard() {
       onClick: () => handleOpenActivityModal('lost', 'Lost', <Cancel sx={{ fontSize: 20 }} />, '#dc2626'),
     },
   ];
+
+  const handleTotalLeadsClick = () => {
+    setSearch('');
+    setFollowUpFilter('');
+    setDispositionFilter('');
+    setDateFilter('thisMonth');
+    setCustomStart('');
+    setCustomEnd('');
+    setPage(1);
+    fetchMyLeads();
+    const el = document.getElementById('my-leads-module-container');
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth' });
+    }
+  };
+
+  useEffect(() => {
+    if (location.pathname === '/agent/leads') {
+      const timer = setTimeout(() => {
+        const el = document.getElementById('my-leads-module-container');
+        if (el) el.scrollIntoView({ behavior: 'smooth' });
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [location.pathname]);
 
   return (
     <Box sx={{ maxWidth: 1400, mx: 'auto' }}>
@@ -1999,73 +2033,180 @@ export default function AgentDashboard() {
         />
       )}
 
-      {/* Today / Action Summary (7 Metrics - Requirement 2) */}
-      <Box
-        sx={{
-          display: 'grid',
-          gridTemplateColumns: {
-            xs: 'repeat(1, 1fr)',
-            sm: 'repeat(2, 1fr)',
-            md: 'repeat(4, 1fr)',
-            lg: 'repeat(7, 1fr)',
-          },
-          gap: 1.5,
-          mb: 3,
-        }}
-      >
-        <KpiCard
-          title="My Total Leads"
-          value={dashboardSummary ? dashboardSummary.totalLeads : totalLeads}
-          icon={<BusinessIcon />}
-          color="#ea580c"
-          loading={dashboardLoading}
-          onClick={() => { setSearch(''); setFollowUpFilter(''); setDispositionFilter(''); setPage(1); }}
-        />
-        <KpiCard
-          title="Today's Follow-ups"
-          value={dashboardSummary ? dashboardSummary.todayFollowups : 0}
-          icon={<Schedule />}
-          color="#0284c7"
-          loading={dashboardLoading}
-          onClick={() => { setFollowUpFilter('today'); setPage(1); }}
-        />
-        <KpiCard
-          title="Overdue Follow-ups"
-          value={dashboardSummary ? dashboardSummary.overdueFollowups : 0}
-          icon={<WarningIcon />}
-          color="#dc2626"
-          loading={dashboardLoading}
-          onClick={() => { setFollowUpFilter('overdue'); setPage(1); }}
-        />
-        <KpiCard
-          title="Today's Scheduled Demos"
-          value={dashboardSummary ? dashboardSummary.todayDemos : 0}
-          icon={<LaptopMac />}
-          color="#4f46e5"
-          loading={dashboardLoading}
-        />
-        <KpiCard
-          title="Today's Walk-ins"
-          value={dashboardSummary ? dashboardSummary.todayWalkIns : 0}
-          icon={<DirectionsWalk />}
-          color="#059669"
-          loading={dashboardLoading}
-        />
-        <KpiCard
-          title="Won Leads"
-          value={dashboardSummary ? dashboardSummary.wonLeads : 0}
-          icon={<EmojiEvents />}
-          color="#10b981"
-          loading={dashboardLoading}
-        />
-        <KpiCard
-          title="Lost Leads"
-          value={dashboardSummary ? dashboardSummary.lostLeads : 0}
-          icon={<Cancel />}
-          color="#64748b"
-          loading={dashboardLoading}
-        />
-      </Box>
+      {/* Summary Section — Total Leads and Temperature Summary Cards */}
+      <Grid container spacing={2} sx={{ mb: 3 }}>
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={handleTotalLeadsClick}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(234, 88, 12, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(234, 88, 12, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(234, 88, 12, 0.16)',
+                borderColor: '#ea580c',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  Total Leads
+                </Typography>
+                {dashboardLoading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#ea580c', lineHeight: 1.1 }}>
+                    {dashboardSummary?.totalLeads ?? totalLeads}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  My accessible leads
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#ea580c', flexShrink: 0 }}>
+                <BusinessIcon sx={{ fontSize: 26 }} />
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigate('/leads?temperature=Hot')}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(239, 68, 68, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(239, 68, 68, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(239, 68, 68, 0.16)',
+                borderColor: '#dc2626',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  🔥 Hot Leads
+                </Typography>
+                {dashboardLoading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#dc2626', lineHeight: 1.1 }}>
+                    {dashboardSummary?.hotLeads ?? 0}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  High purchase intent
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', flexShrink: 0 }}>
+                <Whatshot sx={{ fontSize: 26 }} />
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigate('/leads?temperature=Warm')}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(234, 88, 12, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(234, 88, 12, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(234, 88, 12, 0.16)',
+                borderColor: '#c2410c',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  🟠 Warm Leads
+                </Typography>
+                {dashboardLoading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#c2410c', lineHeight: 1.1 }}>
+                    {dashboardSummary?.warmLeads ?? 0}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  Engaged / Follow-up
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#c2410c', flexShrink: 0 }}>
+                <Typography sx={{ fontSize: 22, lineHeight: 1 }}>🟠</Typography>
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+
+        <Grid item xs={12} sm={6} md={3}>
+          <Paper
+            elevation={0}
+            onClick={() => navigate('/leads?temperature=Cold')}
+            sx={{
+              p: 2.25,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(2, 132, 199, 0.25)',
+              bgcolor: '#ffffff',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease-in-out',
+              boxShadow: '0 2px 10px rgba(2, 132, 199, 0.05)',
+              '&:hover': {
+                transform: 'translateY(-2px)',
+                boxShadow: '0 8px 24px rgba(2, 132, 199, 0.16)',
+                borderColor: '#0284c7',
+              },
+            }}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
+                  ❄️ Cold Leads
+                </Typography>
+                {dashboardLoading ? (
+                  <Skeleton width={70} height={42} />
+                ) : (
+                  <Typography variant="h4" fontWeight={800} sx={{ color: '#0284c7', lineHeight: 1.1 }}>
+                    {dashboardSummary?.coldLeads ?? 0}
+                  </Typography>
+                )}
+                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
+                  Low engagement
+                </Typography>
+              </Box>
+              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(2, 132, 199, 0.1)', color: '#0284c7', flexShrink: 0 }}>
+                <AcUnit sx={{ fontSize: 26 }} />
+              </Box>
+            </Box>
+          </Paper>
+        </Grid>
+      </Grid>
 
       {/* Today's Actions Queue (Requirement 3) */}
       <TodayActionsSection
@@ -2080,6 +2221,7 @@ export default function AgentDashboard() {
 
       {/* "My Leads" Module */}
       <Paper
+        id="my-leads-module-container"
         elevation={0}
         sx={{
           borderRadius: 3,
@@ -2308,7 +2450,7 @@ export default function AgentDashboard() {
                     <TableRow
                       key={lead._id}
                       hover
-                      onClick={() => navigate(`/leads/${lead._id}`)}
+                      onClick={() => openHospitalDetail(lead._id, lead)}
                       sx={{
                         cursor: 'pointer',
                         '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.04)' },
@@ -2669,7 +2811,7 @@ export default function AgentDashboard() {
                             startIcon={<Visibility sx={{ fontSize: 14 }} />}
                             onClick={(e) => {
                               e.stopPropagation();
-                              navigate(`/leads/${lead._id}`);
+                              openHospitalDetail(lead._id, lead);
                             }}
                             sx={{
                               borderRadius: 1.5,
@@ -2893,22 +3035,46 @@ export default function AgentDashboard() {
 
           {/* Input Fields */}
           <Stack spacing={2.5}>
-            <FormControl fullWidth required size="small">
-              <InputLabel id="call-disposition-label">Call Disposition *</InputLabel>
-              <Select
-                labelId="call-disposition-label"
-                label="Call Disposition *"
-                value={callDisposition}
-                onChange={(e) => setCallDisposition(e.target.value)}
-                sx={{ borderRadius: 2 }}
-              >
-                {CALL_DISPOSITIONS.map((disp) => (
-                  <MenuItem key={disp} value={disp}>
-                    {disp}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+            <Grid container spacing={2}>
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth size="small">
+                  <InputLabel id="call-temp-label">Lead Temperature</InputLabel>
+                  <Select
+                    labelId="call-temp-label"
+                    label="Lead Temperature"
+                    value={callTemperature}
+                    onChange={(e) => setCallTemperature(e.target.value)}
+                    sx={{ borderRadius: 2 }}
+                  >
+                    <MenuItem value=""><em>No change ({selectedLead?.leadTemperature || 'Unclassified'})</em></MenuItem>
+                    <MenuItem value="Hot">🔥 Hot</MenuItem>
+                    <MenuItem value="Warm">🟠 Warm</MenuItem>
+                    <MenuItem value="Cold">❄️ Cold</MenuItem>
+                  </Select>
+                  <Typography variant="caption" sx={{ color: 'text.secondary', display: 'block', mt: 0.5, fontSize: 11 }}>
+                    Current: <strong>{selectedLead?.leadTemperature ? (selectedLead.leadTemperature.toUpperCase() === 'HOT' ? '🔥 Hot' : selectedLead.leadTemperature.toUpperCase() === 'WARM' ? '🟠 Warm' : '❄️ Cold') : 'Unclassified'}</strong>
+                  </Typography>
+                </FormControl>
+              </Grid>
+              <Grid item xs={12} sm={6}>
+                <FormControl fullWidth required size="small">
+                  <InputLabel id="call-disposition-label">Call Disposition *</InputLabel>
+                  <Select
+                    labelId="call-disposition-label"
+                    label="Call Disposition *"
+                    value={callDisposition}
+                    onChange={(e) => setCallDisposition(e.target.value)}
+                    sx={{ borderRadius: 2 }}
+                  >
+                    {CALL_DISPOSITIONS.map((disp) => (
+                      <MenuItem key={disp} value={disp}>
+                        {disp}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              </Grid>
+            </Grid>
 
             <TextField
               fullWidth

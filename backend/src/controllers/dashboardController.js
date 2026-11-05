@@ -154,6 +154,9 @@ exports.adminDashboard = async (req, res, next) => {
       if (end) newLeadsMatch.createdAt.$lte = end;
     }
     const totalLeadsPromise = Lead.countDocuments(newLeadsMatch);
+    const hotLeadsPromise = Lead.countDocuments({ ...newLeadsMatch, leadTemperature: { $in: ['Hot', 'hot', 'HOT'] } });
+    const warmLeadsPromise = Lead.countDocuments({ ...newLeadsMatch, leadTemperature: { $in: ['Warm', 'warm', 'WARM'] } });
+    const coldLeadsPromise = Lead.countDocuments({ ...newLeadsMatch, leadTemperature: { $in: ['Cold', 'cold', 'COLD'] } });
 
     // 2. Calls (Called in date range by user)
     const callMatch = {};
@@ -305,6 +308,9 @@ exports.adminDashboard = async (req, res, next) => {
 
     const [
       totalLeads,
+      hotLeads,
+      warmLeads,
+      coldLeads,
       dailyCalls,
       dailyDemosScheduled,
       dailyDemosCompleted,
@@ -320,6 +326,9 @@ exports.adminDashboard = async (req, res, next) => {
       assignedToActiveLeads,
     ] = await Promise.all([
       totalLeadsPromise,
+      hotLeadsPromise,
+      warmLeadsPromise,
+      coldLeadsPromise,
       dailyCallsPromise,
       dailyDemosScheduledPromise,
       dailyDemosCompletedPromise,
@@ -339,6 +348,9 @@ exports.adminDashboard = async (req, res, next) => {
 
     res.json({
       totalLeads,
+      hotLeads: hotLeads || 0,
+      warmLeads: warmLeads || 0,
+      coldLeads: coldLeads || 0,
       unassignedLeads,
       upcomingFollowups,
       overdueFollowups: dailyOverdueFollowups,
@@ -359,6 +371,9 @@ exports.adminDashboard = async (req, res, next) => {
         won: totalWon || 0,
         lost: totalLost || 0,
         newLeads: totalLeads || 0,
+        hotLeads: hotLeads || 0,
+        warmLeads: warmLeads || 0,
+        coldLeads: coldLeads || 0,
       }
     });
   } catch (err) {
@@ -390,6 +405,9 @@ exports.agentDashboard = async (req, res, next) => {
 
     // 1. My Total Leads
     const totalLeadsPromise = Lead.countDocuments(matchOwner);
+    const hotLeadsPromise = Lead.countDocuments({ ...matchOwner, leadTemperature: { $in: ['Hot', 'hot', 'HOT'] } });
+    const warmLeadsPromise = Lead.countDocuments({ ...matchOwner, leadTemperature: { $in: ['Warm', 'warm', 'WARM'] } });
+    const coldLeadsPromise = Lead.countDocuments({ ...matchOwner, leadTemperature: { $in: ['Cold', 'cold', 'COLD'] } });
 
     // 2. Today's Follow-ups (scheduled for today and still OPEN)
     const todayFollowupsPromise = Lead.countDocuments({
@@ -641,6 +659,9 @@ exports.agentDashboard = async (req, res, next) => {
 
     const [
       totalLeads,
+      hotLeads,
+      warmLeads,
+      coldLeads,
       todayFollowups,
       overdueFollowups,
       upcomingFollowups,
@@ -667,6 +688,9 @@ exports.agentDashboard = async (req, res, next) => {
       recentActivities
     ] = await Promise.all([
       totalLeadsPromise,
+      hotLeadsPromise,
+      warmLeadsPromise,
+      coldLeadsPromise,
       todayFollowupsPromise,
       overdueFollowupsPromise,
       upcomingFollowupsPromise,
@@ -696,6 +720,9 @@ exports.agentDashboard = async (req, res, next) => {
     res.json({
       summary: {
         totalLeads,
+        hotLeads: hotLeads || 0,
+        warmLeads: warmLeads || 0,
+        coldLeads: coldLeads || 0,
         todayFollowups,
         overdueFollowups,
         upcomingFollowups,
@@ -729,6 +756,9 @@ exports.agentDashboard = async (req, res, next) => {
       recentActivities: recentActivities || [],
       // Backward compatibility fields
       totalLeads,
+      hotLeads: hotLeads || 0,
+      warmLeads: warmLeads || 0,
+      coldLeads: coldLeads || 0,
       upcomingFollowups,
       overdueFollowups,
       totalWon: wonLeads,
@@ -1459,7 +1489,7 @@ function formatISTDateTime(date) {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: true,
+    hour12: false,
   });
 }
 
@@ -1845,6 +1875,7 @@ async function fetchDailyActivityData(dateStr, queryParams = {}) {
     summary,
     hospitalActivity,
     demos: demosInDay.map(d => ({
+      leadId: d.lead?._id?.toString() || '',
       leadNumber: d.lead?.leadNumber || 'N/A',
       hospitalName: d.lead?.organizationName || 'N/A',
       agentName: d.salesAgent?.fullName || d.salesAgent?.username || 'N/A',
@@ -1855,6 +1886,7 @@ async function fetchDailyActivityData(dateStr, queryParams = {}) {
       remarks: d.remarks || 'N/A'
     })),
     walkIns: completedWalkIns.map(w => ({
+      leadId: w.lead?._id?.toString() || '',
       leadNumber: w.lead?.leadNumber || 'N/A',
       hospitalName: w.lead?.organizationName || 'N/A',
       hospitalAddress: w.lead?.address || 'N/A',
@@ -1880,6 +1912,7 @@ async function fetchDailyActivityData(dateStr, queryParams = {}) {
         : null
     })),
     wonLeads: wonLeads.map(l => ({
+      leadId: l._id?.toString() || '',
       leadNumber: l.leadNumber || 'N/A',
       hospitalName: l.organizationName || 'N/A',
       dealValue: l.dealValue || 0,
@@ -1888,6 +1921,7 @@ async function fetchDailyActivityData(dateStr, queryParams = {}) {
       owner: l.currentOwner?.fullName || l.currentOwner?.username || 'Unassigned'
     })),
     lostLeads: lostLeads.map(l => ({
+      leadId: l._id?.toString() || '',
       leadNumber: l.leadNumber || 'N/A',
       hospitalName: l.organizationName || 'N/A',
       lostReason: l.lostReason || 'N/A',

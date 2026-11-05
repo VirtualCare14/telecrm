@@ -37,7 +37,7 @@ export function generateDailyActivityPdf(reportData) {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
-    hour12: true,
+    hour12: false,
   });
   doc.text(`Generated At: ${nowIstStr} IST`, pageWidth - 30, 44, { align: 'right' });
 

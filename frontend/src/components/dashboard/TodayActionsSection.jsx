@@ -12,13 +12,13 @@ import {
   Stack,
   Divider,
   Skeleton,
+  Collapse,
 } from '@mui/material';
 import {
   WarningAmber as WarningIcon,
   Schedule,
   LaptopMac,
   DirectionsWalk,
-  StarBorder as StarIcon,
   ContentCopy,
   Check as CheckIcon,
   PhoneInTalk,
@@ -27,10 +27,14 @@ import {
   DirectionsRun,
   Bolt,
   ForumOutlined,
-  CalendarMonth,
+  KeyboardArrowDown,
+  KeyboardArrowUp,
+  ExpandMore,
+  ExpandLess,
 } from '@mui/icons-material';
 import { formatDate, formatTime, formatDateTime } from '../../utils/dateHelpers';
 import { getNextAction } from '../../utils/nextActionHelper';
+import { useHospitalDetail } from '../../context/HospitalDetailContext';
 
 export default function TodayActionsSection({
   todayActions = {},
@@ -41,7 +45,9 @@ export default function TodayActionsSection({
   navigate,
   agentRole,
 }) {
+  const { openHospitalDetail } = useHospitalDetail();
   const [currentTab, setCurrentTab] = useState('all');
+  const [isExpanded, setIsExpanded] = useState(false);
 
   const overdue = todayActions.overdue || [];
   const todayFollowups = todayActions.todayFollowups || [];
@@ -93,6 +99,15 @@ export default function TodayActionsSection({
   } else if (currentTab === 'other') {
     displayedItems = otherActions.map((l) => ({ ...l, actionCategory: 'other' }));
   }
+
+  // Handle clicking a category count card
+  const handleCategoryClick = (categoryKey) => {
+    setCurrentTab(categoryKey);
+    setIsExpanded(true);
+  };
+
+  // Preview items when collapsed: maximum 3
+  const visibleItems = isExpanded ? displayedItems : displayedItems.slice(0, 3);
 
   const renderBadge = (item) => {
     switch (item.actionCategory) {
@@ -180,6 +195,59 @@ export default function TodayActionsSection({
     }
   };
 
+  const categoryCards = [
+    {
+      key: 'overdue',
+      label: 'Overdue',
+      count: overdue.length,
+      icon: <WarningIcon sx={{ fontSize: 16 }} />,
+      color: '#dc2626',
+      bg: overdue.length > 0 ? '#fef2f2' : '#f8fafc',
+      border: overdue.length > 0 ? '#fca5a5' : '#e2e8f0',
+      activeBorder: '#dc2626',
+    },
+    {
+      key: 'today_followups',
+      label: 'Follow-ups Today',
+      count: todayFollowups.length,
+      icon: <Schedule sx={{ fontSize: 16 }} />,
+      color: '#0284c7',
+      bg: todayFollowups.length > 0 ? '#f0f9ff' : '#f8fafc',
+      border: todayFollowups.length > 0 ? '#bae6fd' : '#e2e8f0',
+      activeBorder: '#0284c7',
+    },
+    {
+      key: 'today_demos',
+      label: 'Demos Today',
+      count: todayDemos.length,
+      icon: <LaptopMac sx={{ fontSize: 16 }} />,
+      color: '#6366f1',
+      bg: todayDemos.length > 0 ? '#eef2ff' : '#f8fafc',
+      border: todayDemos.length > 0 ? '#c7d2fe' : '#e2e8f0',
+      activeBorder: '#6366f1',
+    },
+    {
+      key: 'today_walkins',
+      label: 'Walk-ins Today',
+      count: todayWalkIns.length,
+      icon: <DirectionsWalk sx={{ fontSize: 16 }} />,
+      color: '#059669',
+      bg: todayWalkIns.length > 0 ? '#ecfdf5' : '#f8fafc',
+      border: todayWalkIns.length > 0 ? '#a7f3d0' : '#e2e8f0',
+      activeBorder: '#059669',
+    },
+    {
+      key: 'other',
+      label: 'Other Next Actions',
+      count: otherActions.length,
+      icon: <Bolt sx={{ fontSize: 16 }} />,
+      color: '#d97706',
+      bg: otherActions.length > 0 ? '#fffbeb' : '#f8fafc',
+      border: otherActions.length > 0 ? '#fde68a' : '#e2e8f0',
+      activeBorder: '#d97706',
+    },
+  ];
+
   return (
     <Paper
       elevation={0}
@@ -192,7 +260,7 @@ export default function TodayActionsSection({
         overflow: 'hidden',
       }}
     >
-      {/* Header */}
+      {/* ===================== HEADER ===================== */}
       <Box
         sx={{
           p: { xs: 2, sm: 2.5 },
@@ -237,45 +305,124 @@ export default function TodayActionsSection({
             </Typography>
           </Box>
         </Box>
-      </Box>
 
-      {/* Action Filter Tabs */}
-      <Box sx={{ borderBottom: '1px solid #f1f5f9', px: 2, bgcolor: '#f8fafc' }}>
-        <Tabs
-          value={currentTab}
-          onChange={(e, val) => setCurrentTab(val)}
-          variant="scrollable"
-          scrollButtons="auto"
+        {/* Header Right: Expand / Collapse Toggle Button */}
+        <Button
+          size="small"
+          onClick={() => setIsExpanded(!isExpanded)}
+          endIcon={isExpanded ? <KeyboardArrowUp /> : <KeyboardArrowDown />}
           sx={{
-            minHeight: 44,
-            '& .MuiTab-root': {
-              minHeight: 44,
-              py: 1,
-              px: 2,
-              fontSize: 13,
-              fontWeight: 600,
-              textTransform: 'none',
-              color: '#64748b',
-              '&.Mui-selected': {
-                color: 'primary.main',
-              },
-            },
+            textTransform: 'none',
+            fontWeight: 600,
+            fontSize: 12,
+            color: '#475569',
+            border: '1px solid #e2e8f0',
+            borderRadius: 2,
+            px: 1.5,
+            py: 0.5,
+            '&:hover': { bgcolor: '#f8fafc', borderColor: '#cbd5e1' },
           }}
         >
-          <Tab label={`All Actions (${totalCount})`} value="all" />
-          <Tab
-            label={`🚨 Overdue (${overdue.length})`}
-            value="overdue"
-            sx={{ color: overdue.length > 0 ? '#dc2626 !important' : undefined }}
-          />
-          <Tab label={`⏰ Follow-ups Today (${todayFollowups.length})`} value="today_followups" />
-          <Tab label={`💻 Demos Today (${todayDemos.length})`} value="today_demos" />
-          <Tab label={`🚶 Walk-ins Today (${todayWalkIns.length})`} value="today_walkins" />
-          <Tab label={`⚡ Other Next Actions (${otherActions.length})`} value="other" />
-        </Tabs>
+          {isExpanded ? 'Show Less' : `View All (${totalCount})`}
+        </Button>
       </Box>
 
-      {/* Action Items List */}
+      {/* ===================== CATEGORY COUNTS SUMMARY ROW ===================== */}
+      <Box
+        sx={{
+          p: { xs: 1.5, sm: 2 },
+          bgcolor: '#fafafa',
+          borderBottom: '1px solid #f1f5f9',
+          display: 'grid',
+          gridTemplateColumns: {
+            xs: 'repeat(2, 1fr)',
+            sm: 'repeat(3, 1fr)',
+            md: 'repeat(5, 1fr)',
+          },
+          gap: 1.25,
+        }}
+      >
+        {categoryCards.map((cat) => {
+          const isSelected = isExpanded && currentTab === cat.key;
+          return (
+            <Box
+              key={cat.key}
+              onClick={() => handleCategoryClick(cat.key)}
+              sx={{
+                p: 1.25,
+                borderRadius: 2,
+                bgcolor: cat.bg,
+                border: '1px solid',
+                borderColor: isSelected ? cat.activeBorder : cat.border,
+                cursor: 'pointer',
+                transition: 'all 0.15s ease',
+                boxShadow: isSelected ? '0 2px 8px rgba(0,0,0,0.06)' : 'none',
+                transform: isSelected ? 'translateY(-1px)' : 'none',
+                '&:hover': {
+                  borderColor: cat.activeBorder,
+                  transform: 'translateY(-1px)',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
+                },
+              }}
+            >
+              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography
+                  variant="caption"
+                  fontWeight={600}
+                  sx={{ color: isSelected ? cat.color : '#475569', fontSize: 11, lineHeight: 1.2 }}
+                >
+                  {cat.label}
+                </Typography>
+                <Box sx={{ color: cat.color, display: 'flex' }}>{cat.icon}</Box>
+              </Box>
+              <Typography variant="h6" fontWeight={800} sx={{ color: cat.color, lineHeight: 1 }}>
+                {cat.count}
+              </Typography>
+            </Box>
+          );
+        })}
+      </Box>
+
+      {/* ===================== EXPANDED FILTER TABS ===================== */}
+      {isExpanded && (
+        <Box sx={{ borderBottom: '1px solid #f1f5f9', px: 2, bgcolor: '#ffffff' }}>
+          <Tabs
+            value={currentTab}
+            onChange={(e, val) => setCurrentTab(val)}
+            variant="scrollable"
+            scrollButtons="auto"
+            sx={{
+              minHeight: 44,
+              '& .MuiTab-root': {
+                minHeight: 44,
+                py: 1,
+                px: 2,
+                fontSize: 13,
+                fontWeight: 600,
+                textTransform: 'none',
+                color: '#64748b',
+                '&.Mui-selected': {
+                  color: 'primary.main',
+                  fontWeight: 700,
+                },
+              },
+            }}
+          >
+            <Tab label={`All Actions (${totalCount})`} value="all" />
+            <Tab
+              label={`🚨 Overdue (${overdue.length})`}
+              value="overdue"
+              sx={{ color: overdue.length > 0 ? '#dc2626 !important' : undefined }}
+            />
+            <Tab label={`⏰ Follow-ups Today (${todayFollowups.length})`} value="today_followups" />
+            <Tab label={`💻 Demos Today (${todayDemos.length})`} value="today_demos" />
+            <Tab label={`🚶 Walk-ins Today (${todayWalkIns.length})`} value="today_walkins" />
+            <Tab label={`⚡ Other Next Actions (${otherActions.length})`} value="other" />
+          </Tabs>
+        </Box>
+      )}
+
+      {/* ===================== ACTION ITEMS LIST ===================== */}
       <Box sx={{ p: { xs: 1.5, sm: 2 } }}>
         {loading ? (
           <Stack spacing={1.5}>
@@ -284,7 +431,7 @@ export default function TodayActionsSection({
             ))}
           </Stack>
         ) : displayedItems.length === 0 ? (
-          <Box sx={{ py: 5, textAlign: 'center' }}>
+          <Box sx={{ py: 4, textAlign: 'center' }}>
             <CheckCircleOutline sx={{ fontSize: 44, color: '#10b981', mb: 1 }} />
             <Typography variant="subtitle1" fontWeight={700} sx={{ color: '#0f172a' }}>
               All Caught Up!
@@ -297,27 +444,38 @@ export default function TodayActionsSection({
           </Box>
         ) : (
           <Stack spacing={1.5}>
-            {displayedItems.map((item, idx) => {
-              const leadId = item._id;
-              const contactName = item.primaryContact?.name || '—';
-              const contactPhone = item.primaryContact?.phone || '—';
-              const previousRemark = item.latestRemark || item.demoDetails?.remarks || item.walkInDetails?.remark;
-              const nextAction = getNextAction(item);
+            {visibleItems.map((item, idx) => {
+              const leadId = item._id || item.id;
+              const contactName = item.primaryContact?.name || item.contactName || 'Primary Contact';
+              const contactPhone = item.primaryContact?.phone || item.phone || '';
+              const designation = item.primaryContact?.designation || item.designation || '';
+              const nextAction = getNextAction(item, agentRole);
+
+              // Discussion remark from latest activity / remark
+              const previousRemark =
+                item.latestRemark ||
+                item.demoDetails?.remarks ||
+                item.walkInDetails?.remark ||
+                item.remarks ||
+                '';
 
               return (
                 <Paper
                   key={leadId ? `${leadId}-${idx}` : idx}
                   elevation={0}
+                  onClick={() => leadId && openHospitalDetail(leadId, item)}
                   sx={{
-                    p: 2,
+                    p: { xs: 1.5, sm: 2 },
                     borderRadius: 2.5,
                     border: '1px solid',
-                    borderColor: item.actionCategory === 'overdue' ? '#fca5a5' : '#e2e8f0',
-                    bgcolor: item.actionCategory === 'overdue' ? 'rgba(254, 242, 242, 0.4)' : '#ffffff',
-                    transition: 'all 0.2s ease',
+                    borderColor: item.actionCategory === 'overdue' ? '#fecaca' : '#e2e8f0',
+                    bgcolor: item.actionCategory === 'overdue' ? '#fffafb' : '#ffffff',
+                    transition: 'all 0.15s ease',
+                    cursor: 'pointer',
                     '&:hover': {
-                      borderColor: 'primary.main',
-                      boxShadow: '0 4px 16px rgba(15, 23, 42, 0.06)',
+                      borderColor: item.actionCategory === 'overdue' ? '#f87171' : 'primary.main',
+                      boxShadow: '0 4px 14px rgba(15, 23, 42, 0.06)',
+                      transform: 'translateY(-1px)',
                     },
                   }}
                 >
@@ -325,25 +483,25 @@ export default function TodayActionsSection({
                     sx={{
                       display: 'flex',
                       flexDirection: { xs: 'column', md: 'row' },
-                      justifyContent: 'space-between',
                       alignItems: { xs: 'flex-start', md: 'center' },
-                      gap: 1.5,
+                      justifyContent: 'space-between',
+                      gap: { xs: 1.5, md: 2 },
                     }}
                   >
                     {/* Left: Organization & Contact Info */}
-                    <Box sx={{ minWidth: { md: 240 } }}>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <Box sx={{ minWidth: { md: 280 }, maxWidth: { md: 340 } }}>
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
                         <Typography
-                          variant="subtitle1"
+                          variant="subtitle2"
                           fontWeight={700}
                           sx={{
                             color: '#0f172a',
-                            cursor: 'pointer',
+                            fontSize: 14,
+                            lineHeight: 1.3,
                             '&:hover': { color: 'primary.main' },
                           }}
-                          onClick={() => leadId && navigate(`/leads/${leadId}`)}
                         >
-                          {item.organizationName || 'Unnamed Lead'}
+                          {item.organizationName || 'Unnamed Hospital'}
                         </Typography>
                         {item.leadNumber && (
                           <Chip
@@ -360,28 +518,24 @@ export default function TodayActionsSection({
                           />
                         )}
                       </Box>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5, flexWrap: 'wrap' }}>
-                        <Typography variant="body2" sx={{ color: '#334155', fontWeight: 500 }}>
-                          {contactName}
+
+                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+                        <Typography variant="caption" sx={{ color: '#475569', fontWeight: 600 }}>
+                          {contactName} {designation && `(${designation})`}
                         </Typography>
-                        {item.primaryContact?.designation && (
-                          <Typography variant="caption" sx={{ color: '#64748b' }}>
-                            ({item.primaryContact.designation})
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                          <Typography variant="caption" sx={{ color: 'primary.main', fontWeight: 700 }}>
+                            {contactPhone || '—'}
                           </Typography>
-                        )}
-                        <Typography variant="caption" sx={{ color: '#cbd5e1' }}>
-                          •
-                        </Typography>
-                        <Box sx={{ display: 'inline-flex', alignItems: 'center', gap: 0.5 }}>
-                          <Typography variant="body2" fontWeight={600} sx={{ color: '#0284c7' }}>
-                            {contactPhone}
-                          </Typography>
-                          {contactPhone !== '—' && (
-                            <Tooltip title={copiedId === leadId ? 'Copied!' : 'Copy Phone'}>
+                          {contactPhone && onCopyPhone && (
+                            <Tooltip title={copiedId === leadId ? 'Copied!' : 'Copy phone'}>
                               <IconButton
                                 size="small"
-                                onClick={(e) => onCopyPhone(e, contactPhone, leadId)}
-                                sx={{ p: 0.25, color: copiedId === leadId ? 'success.main' : '#94a3b8' }}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onCopyPhone(e, contactPhone, leadId);
+                                }}
+                                sx={{ p: 0.25, color: copiedId === leadId ? '#10b981' : '#94a3b8' }}
                               >
                                 {copiedId === leadId ? (
                                   <CheckIcon sx={{ fontSize: 13 }} />
@@ -439,8 +593,15 @@ export default function TodayActionsSection({
                       )}
                     </Box>
 
-                    {/* Right: Dynamic Action Buttons */}
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, alignSelf: { xs: 'flex-end', md: 'center' } }}>
+                    {/* Right: Action Buttons */}
+                    <Box
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        alignSelf: { xs: 'flex-end', md: 'center' },
+                      }}
+                    >
                       <Button
                         variant={nextAction.variant || 'contained'}
                         size="small"
@@ -468,10 +629,13 @@ export default function TodayActionsSection({
                       >
                         {nextAction.label || 'Take Action'}
                       </Button>
-                      <Tooltip title="View Lead Details">
+                      <Tooltip title="View Hospital Details">
                         <IconButton
                           size="small"
-                          onClick={() => leadId && navigate(`/leads/${leadId}`)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (leadId) openHospitalDetail(leadId, item);
+                          }}
                           sx={{
                             p: 0.75,
                             border: '1px solid #e2e8f0',
@@ -489,6 +653,39 @@ export default function TodayActionsSection({
               );
             })}
           </Stack>
+        )}
+
+        {/* ===================== BOTTOM EXPAND / COLLAPSE BUTTON ===================== */}
+        {displayedItems.length > 3 && (
+          <Box sx={{ mt: 2, display: 'flex', justifyContent: 'center' }}>
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={() => setIsExpanded(!isExpanded)}
+              endIcon={isExpanded ? <KeyboardArrowUp /> : <KeyboardArrowDown />}
+              sx={{
+                borderRadius: 2.5,
+                textTransform: 'none',
+                fontWeight: 600,
+                fontSize: 13,
+                px: 3,
+                py: 0.75,
+                borderColor: '#cbd5e1',
+                color: '#334155',
+                bgcolor: '#ffffff',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                '&:hover': {
+                  bgcolor: '#f8fafc',
+                  borderColor: 'primary.main',
+                  color: 'primary.main',
+                },
+              }}
+            >
+              {isExpanded
+                ? 'Show Less'
+                : `View All ${displayedItems.length} Actions in this category`}
+            </Button>
+          </Box>
         )}
       </Box>
     </Paper>

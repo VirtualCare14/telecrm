@@ -40,6 +40,7 @@ import {
   PhoneInTalk,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
+import { useHospitalDetail } from '../context/HospitalDetailContext';
 import {
   getDashboardMetricRecords,
   downloadDashboardMetricRecordsExport,
@@ -133,6 +134,7 @@ export default function DashboardActivityModal({
   selectedDateLabel,
 }) {
   const navigate = useNavigate();
+  const { openHospitalDetail } = useHospitalDetail();
   const isCall = metric === 'calls';
 
   const [records, setRecords] = useState([]);
@@ -273,7 +275,7 @@ export default function DashboardActivityModal({
   const handleOpenLead = (leadId) => {
     if (!leadId) return;
     onClose();
-    navigate(`/leads/${leadId}`);
+    openHospitalDetail(leadId);
   };
 
   return (

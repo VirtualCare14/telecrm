@@ -70,7 +70,7 @@ export default function Leads() {
       }
     }
     return params;
-  }, [search, page, pageSize, ownerFilter, closureFilter, followUpFilter, dateFilter, customStart, customEnd]);
+  }, [search, page, pageSize, ownerFilter, closureFilter, followUpFilter, temperatureFilter, dateFilter, customStart, customEnd]);
 
   useEffect(() => {
     if (user?.role === 'ADMIN') {
@@ -108,6 +108,13 @@ export default function Leads() {
     setRefreshTrigger((prev) => prev + 1);
   };
 
+  const handleLeadUpdated = (updatedLead) => {
+    setLeads((prev) =>
+      prev.map((l) => (l._id === updatedLead._id ? { ...l, ...updatedLead } : l))
+    );
+    setRefreshTrigger((prev) => prev + 1);
+  };
+
   // Auto-fetch when filters change, with cancellation to prevent stale response race conditions
   useEffect(() => {
     let isCurrent = true;
@@ -138,7 +145,7 @@ export default function Leads() {
     return () => {
       isCurrent = false;
     };
-  }, [page, ownerFilter, dateFilter, closureFilter, followUpFilter, customStart, customEnd, refreshTrigger, buildParams]);
+  }, [page, ownerFilter, dateFilter, closureFilter, followUpFilter, temperatureFilter, customStart, customEnd, refreshTrigger, buildParams]);
 
   // Handle search - use debounce for search text
   useEffect(() => {
@@ -159,6 +166,7 @@ export default function Leads() {
     const dateParam = searchParams.get('dateFilter') || '';
     const startParam = searchParams.get('startDate') || '';
     const endParam = searchParams.get('endDate') || '';
+    const tempParam = searchParams.get('temperature') || searchParams.get('leadTemperature') || '';
 
     let nextOwner = '';
     if (unassigned === 'true' || owner === 'unassigned') {
@@ -174,6 +182,7 @@ export default function Leads() {
     setDateFilter(dateParam);
     setCustomStart(startParam);
     setCustomEnd(endParam);
+    setTemperatureFilter(tempParam);
     if (!searchParams.toString()) {
       setSearch('');
       setDateFilter('');
@@ -368,10 +377,11 @@ export default function Leads() {
             <FormControl fullWidth size="small">
               <InputLabel>Temperature</InputLabel>
               <Select value={temperatureFilter} label="Temperature" onChange={(e) => { setTemperatureFilter(e.target.value); setPage(1); }} sx={{ borderRadius: 2 }}>
-                <MenuItem value="">All Temperatures</MenuItem>
+                <MenuItem value="">All</MenuItem>
                 <MenuItem value="Hot">🔥 Hot</MenuItem>
-                <MenuItem value="Warm">⚡ Warm</MenuItem>
+                <MenuItem value="Warm">🟠 Warm</MenuItem>
                 <MenuItem value="Cold">❄️ Cold</MenuItem>
+                <MenuItem value="Unclassified">Unclassified</MenuItem>
               </Select>
             </FormControl>
           </Grid>
@@ -417,7 +427,7 @@ export default function Leads() {
       )}
 
       <Paper elevation={0} sx={{ borderRadius: 3, border: '1px solid', borderColor: 'divider', overflow: 'hidden' }}>
-        <LeadTable leads={leads} loading={loading} onLeadDeleted={handleLeadDeleted} />
+        <LeadTable leads={leads} loading={loading} onLeadDeleted={handleLeadDeleted} onLeadUpdated={handleLeadUpdated} />
       </Paper>
 
       {totalPages > 1 && (

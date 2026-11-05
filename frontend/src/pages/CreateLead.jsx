@@ -21,6 +21,7 @@ export default function CreateLead() {
   const [form, setForm] = useState({
     organizationName: '', industry: '', organizationType: '', address: '', leadSource: '',
     hospitalLatitude: '', hospitalLongitude: '',
+    leadTemperature: '',
   });
   const [customSource, setCustomSource] = useState('');
   const [remarks, setRemarks] = useState('');
@@ -124,6 +125,9 @@ export default function CreateLead() {
     } else if (form.leadSource === 'Other' && !customSource.trim()) {
       newFieldErrors.customSource = 'Please specify source';
     }
+    if (!form.leadTemperature) {
+      newFieldErrors.leadTemperature = 'Lead Temperature is required';
+    }
 
     if (Object.keys(newFieldErrors).length > 0) {
       setFieldErrors(newFieldErrors);
@@ -145,6 +149,7 @@ export default function CreateLead() {
         organizationType: form.organizationType,
         address: form.address,
         leadSource: finalLeadSource,
+        leadTemperature: form.leadTemperature,
         remarks: remarks.trim(),
         contacts: [{
           name: contact.name,
@@ -359,6 +364,28 @@ export default function CreateLead() {
                   ))}
                 </Select>
                 {fieldErrors.leadSource && <FormHelperText>{fieldErrors.leadSource}</FormHelperText>}
+              </FormControl>
+            </Grid>
+
+            <Grid item xs={12} md={6}>
+              <FormControl fullWidth required error={Boolean(fieldErrors.leadTemperature)} sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}>
+                <InputLabel id="create-lead-temperature-label">Lead Temperature</InputLabel>
+                <Select
+                  labelId="create-lead-temperature-label"
+                  value={form.leadTemperature}
+                  label="Lead Temperature"
+                  onChange={(e) => {
+                    handleFormChange('leadTemperature')(e);
+                    if (fieldErrors.leadTemperature) {
+                      setFieldErrors((prev) => ({ ...prev, leadTemperature: undefined }));
+                    }
+                  }}
+                >
+                  <MenuItem value="Hot">🔥 Hot</MenuItem>
+                  <MenuItem value="Warm">🟠 Warm</MenuItem>
+                  <MenuItem value="Cold">❄️ Cold</MenuItem>
+                </Select>
+                {fieldErrors.leadTemperature && <FormHelperText>{fieldErrors.leadTemperature}</FormHelperText>}
               </FormControl>
             </Grid>
             {form.leadSource === 'Other' && (

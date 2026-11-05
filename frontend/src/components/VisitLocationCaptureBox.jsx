@@ -246,7 +246,7 @@ export default function VisitLocationCaptureBox({
             </Box>
             {capturedAt && (
               <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: 10, mt: 0.25 }}>
-                Captured: {new Date(capturedAt).toLocaleTimeString()}
+                Captured: {new Date(capturedAt).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false })}
               </Typography>
             )}
           </Box>
