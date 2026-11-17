@@ -4,6 +4,7 @@ const ContactPerson = require('../models/ContactPerson');
 const CallLog = require('../models/CallLog');
 const LeadActivity = require('../models/LeadActivity');
 const { canAccessLead } = require('../utils/leadPermissions');
+const { parseFollowUpDateTimeIST } = require('../utils/timeZoneHelper');
 
 exports.createCallLog = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -74,6 +75,8 @@ exports.createCallLog = async (req, res, next) => {
       ? (leadTemperature.trim().charAt(0).toUpperCase() + leadTemperature.trim().slice(1).toLowerCase())
       : undefined;
 
+    const followUpAtVal = followUpAt ? (parseFollowUpDateTimeIST(followUpAt) || new Date(followUpAt)) : undefined;
+
     const call = await CallLog.create([{
       lead: leadId,
       user: req.userId,
@@ -81,7 +84,7 @@ exports.createCallLog = async (req, res, next) => {
       calledAt: calledAtVal,
       disposition,
       remark,
-      followUpAt: followUpAt ? new Date(followUpAt) : undefined,
+      followUpAt: followUpAtVal,
       leadTemperature: normalizedTemp,
     }], { session });
 
@@ -128,7 +131,7 @@ exports.createCallLog = async (req, res, next) => {
       update.closedBy = req.userId;
       update.closedAt = new Date();
     }
-    if (followUpAt) update.nextFollowUpAt = new Date(followUpAt);
+    if (followUpAtVal) update.nextFollowUpAt = followUpAtVal;
     if (existingSoftwareUsed) update.existingSoftwareUsed = existingSoftwareUsed;
     if (softwareName) update.softwareName = softwareName;
 

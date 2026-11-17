@@ -32,6 +32,7 @@ import { transferLead, requestTransfer } from '../services/transferService';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
 import { formatDateTime, formatDateToYYYYMMDD, formatTimeTo24H, splitDateAnd24HTime, combineDateAndTime, isToday, isOverdue } from '../utils/dateHelpers';
 import LeadActionModal from '../components/LeadActionModal';
+import CalendarDatePicker from '../components/CalendarDatePicker';
 import { normalizeWhatsAppPhone, generateSalesAgentTemplate, createWhatsAppUrl, resolveHospitalMapsLink } from '../utils/whatsappHelper';
 import { CALL_DISPOSITIONS, LOST_REASONS, LEAD_SOURCES, INDUSTRIES, ORGANIZATION_TYPES, SOFTWARE_OPTIONS } from '../utils/constants';
 import { classifyLead } from '../utils/leadScoring';
@@ -615,13 +616,10 @@ export default function LeadDetails() {
     } else {
       setEditingWalkInId(null);
       const defaultAgent = availableSalesAgents[0]?._id || (isSalesAgent ? (user?.id || user?._id) : '');
-      const now = new Date();
-      const hours = String(now.getHours()).padStart(2, '0');
-      const mins = String(now.getMinutes()).padStart(2, '0');
       setWalkInData({
         salesAgent: defaultAgent,
         walkInDate: formatDateToYYYYMMDD(new Date()),
-        walkInTime: `${hours}:${mins}`,
+        walkInTime: formatTimeTo24H(new Date()),
         status: 'Planned',
         remark: '',
       });
@@ -901,12 +899,10 @@ export default function LeadDetails() {
     let initialDate = '';
     let initialTime = '10:00';
     if (lead?.nextFollowUpAt) {
-      const dt = new Date(lead.nextFollowUpAt);
-      if (!isNaN(dt.getTime())) {
-        initialDate = formatDateToYYYYMMDD(dt);
-        const hours = String(dt.getHours()).padStart(2, '0');
-        const mins = String(dt.getMinutes()).padStart(2, '0');
-        initialTime = `${hours}:${mins}`;
+      const split = splitDateAnd24HTime(lead.nextFollowUpAt);
+      if (split.date) {
+        initialDate = split.date;
+        initialTime = split.time || '10:00';
       }
     }
     if (!initialDate) {
@@ -1206,11 +1202,9 @@ export default function LeadDetails() {
         actTime = latestFu.followUpTime || '11:00';
         actRemarks = latestFu.remarks || '';
       } else if (lead?.nextFollowUpAt) {
-        const dt = new Date(lead.nextFollowUpAt);
-        actDate = formatDateToYYYYMMDD(dt);
-        const hours = String(dt.getHours()).padStart(2, '0');
-        const mins = String(dt.getMinutes()).padStart(2, '0');
-        actTime = `${hours}:${mins}`;
+        const split = splitDateAnd24HTime(lead.nextFollowUpAt);
+        actDate = split.date || '';
+        actTime = split.time || '10:00';
       } else {
         const tomorrow = new Date();
         tomorrow.setDate(tomorrow.getDate() + 1);
@@ -1847,178 +1841,8 @@ export default function LeadDetails() {
         {/* LEFT COLUMN: Contact Info -> Activity & Call History -> Lead Info */}
         <Grid item xs={12} lg={7.5} xl={8}>
           {/* Section 2: Contact Information (Prominently Displayed with Subtle Green Theme) */}
-          {/* Section 2: Contact Information */}
-          <Paper
-            elevation={0}
-            sx={{
-              p: 3,
-              mb: 3,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'rgba(16, 185, 129, 0.35)',
-              bgcolor: 'background.paper',
-              boxShadow: '0 1px 3px 0 rgba(16, 185, 129, 0.05)',
-            }}
-          >
-            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
-                <Box
-                  sx={{
-                    width: 32,
-                    height: 32,
-                    borderRadius: 2,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    bgcolor: 'rgba(16, 185, 129, 0.12)',
-                    color: '#059669',
-                  }}
-                >
-                  <People sx={{ fontSize: 18, color: '#059669' }} />
-                </Box>
-                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
-                  Contact Information ({contacts.length})
-                </Typography>
-              </Box>
-
-              {canEdit && (
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<PersonAdd />}
-                  onClick={() => setContactOpen(true)}
-                  sx={{
-                    borderRadius: 2,
-                    textTransform: 'none',
-                    fontSize: 12,
-                    borderColor: 'rgba(16, 185, 129, 0.5)',
-                    color: '#059669',
-                    '&:hover': { borderColor: '#059669', bgcolor: 'rgba(16, 185, 129, 0.08)' },
-                  }}
-                >
-                  Add Contact
-                </Button>
-              )}
-            </Box>
-
-            {contacts.length === 0 ? (
-              <Box sx={{ py: 4, textAlign: 'center' }}>
-                <Typography color="text.secondary" variant="body2">
-                  No contact persons added yet.
-                </Typography>
-              </Box>
-            ) : (
-              <Grid container spacing={2}>
-                {contacts.map((contact) => {
-                  const isPrim = contact.isPrimary || contact._id === lead.primaryContact?._id;
-                  return (
-                    <Grid item xs={12} sm={6} key={contact._id}>
-                      <Paper
-                        elevation={0}
-                        sx={{
-                          p: 2.2,
-                          borderRadius: 2.5,
-                          border: '1px solid',
-                          borderColor: isPrim ? 'rgba(16, 185, 129, 0.5)' : 'divider',
-                          bgcolor: isPrim ? 'rgba(16, 185, 129, 0.04)' : '#ffffff',
-                          position: 'relative',
-                          transition: 'all 0.2s',
-                          '&:hover': {
-                            borderColor: isPrim ? '#059669' : '#cbd5e1',
-                          },
-                        }}
-                      >
-                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Typography variant="subtitle2" fontWeight={700} sx={{ color: 'text.primary' }}>
-                              {contact.name}
-                            </Typography>
-                            {isPrim && (
-                              <Chip
-                                icon={<Star sx={{ fontSize: '12px !important', color: '#ffffff' }} />}
-                                label="Primary"
-                                size="small"
-                                sx={{
-                                  height: 20,
-                                  fontSize: 10,
-                                  fontWeight: 700,
-                                  bgcolor: '#059669',
-                                  color: '#ffffff',
-                                  borderRadius: 1,
-                                }}
-                              />
-                            )}
-                          </Box>
-                        </Box>
-
-                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
-                          {contact.designation || 'No Designation'}
-                        </Typography>
-
-                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, mb: 1.5 }}>
-                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Phone sx={{ fontSize: 14, color: '#059669' }} />
-                            <Typography variant="body2" sx={{ fontSize: 13, color: 'text.primary' }}>
-                              {contact.phone}
-                            </Typography>
-                            <Tooltip title={copiedPhone === contact.phone ? 'Copied!' : 'Copy phone'}>
-                              <IconButton size="small" onClick={() => handleCopy(contact.phone)} sx={{ p: 0.2, color: 'text.secondary' }}>
-                                {copiedPhone === contact.phone ? <CheckIcon sx={{ fontSize: 12, color: 'success.main' }} /> : <ContentCopy sx={{ fontSize: 12 }} />}
-                              </IconButton>
-                            </Tooltip>
-                          </Box>
-
-                          {contact.altPhone && (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Phone sx={{ fontSize: 14, color: 'text.secondary' }} />
-                              <Typography variant="caption" color="text.secondary">
-                                Alt: {contact.altPhone}
-                              </Typography>
-                            </Box>
-                          )}
-
-                          {contact.email && (
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                              <Email sx={{ fontSize: 14, color: 'text.secondary' }} />
-                              <Typography variant="caption" color="text.secondary">
-                                {contact.email}
-                              </Typography>
-                            </Box>
-                          )}
-                        </Box>
-
-                        {canEdit && (
-                          <Box sx={{ display: 'flex', gap: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
-                            <Button
-                              size="small"
-                              variant="text"
-                              startIcon={<Edit sx={{ fontSize: 12 }} />}
-                              onClick={() => handleOpenEditContact(contact)}
-                              sx={{ fontSize: 11, textTransform: 'none', color: 'text.secondary', p: 0.5 }}
-                            >
-                              Edit
-                            </Button>
-                            {!isPrim && (
-                              <Button
-                                size="small"
-                                variant="text"
-                                onClick={() => handleSetPrimary(contact._id)}
-                                sx={{ fontSize: 11, textTransform: 'none', color: '#059669', p: 0.5 }}
-                              >
-                                Set as Primary
-                              </Button>
-                            )}
-                          </Box>
-                        )}
-                      </Paper>
-                    </Grid>
-                  );
-                })}
-              </Grid>
-            )}
-          </Paper>
-
-          {/* Section 6: Activity & Call History (Positioned Directly Below Contact Information) */}
+          {/* Section 6: Activity & Call History (Positioned in place of Contact Information) */}
+          
           <Box sx={{ mb: 3 }}>
           <Paper
             elevation={0}
@@ -3787,6 +3611,178 @@ export default function LeadDetails() {
 
         {/* RIGHT COLUMN: Status & Disposition, Next Follow-up -> Assignment & Ownership -> Lead Ownership -> Location & Device */}
         <Grid item xs={12} lg={4.5} xl={4}>
+          {/* Section 2: Contact Information */}
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              borderRadius: 3,
+              border: '1px solid',
+              borderColor: 'rgba(16, 185, 129, 0.35)',
+              bgcolor: 'background.paper',
+              boxShadow: '0 1px 3px 0 rgba(16, 185, 129, 0.05)',
+            }}
+          >
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2.5 }}>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                <Box
+                  sx={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 2,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    bgcolor: 'rgba(16, 185, 129, 0.12)',
+                    color: '#059669',
+                  }}
+                >
+                  <People sx={{ fontSize: 18, color: '#059669' }} />
+                </Box>
+                <Typography variant="h6" fontWeight={700} sx={{ fontSize: 16 }}>
+                  Contact Information ({contacts.length})
+                </Typography>
+              </Box>
+
+              {canEdit && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<PersonAdd />}
+                  onClick={() => setContactOpen(true)}
+                  sx={{
+                    borderRadius: 2,
+                    textTransform: 'none',
+                    fontSize: 12,
+                    borderColor: 'rgba(16, 185, 129, 0.5)',
+                    color: '#059669',
+                    '&:hover': { borderColor: '#059669', bgcolor: 'rgba(16, 185, 129, 0.08)' },
+                  }}
+                >
+                  Add Contact
+                </Button>
+              )}
+            </Box>
+
+            {contacts.length === 0 ? (
+              <Box sx={{ py: 4, textAlign: 'center' }}>
+                <Typography color="text.secondary" variant="body2">
+                  No contact persons added yet.
+                </Typography>
+              </Box>
+            ) : (
+              <Grid container spacing={2}>
+                {contacts.map((contact) => {
+                  const isPrim = contact.isPrimary || contact._id === lead.primaryContact?._id;
+                  return (
+                    <Grid item xs={12} sm={contacts.length > 1 ? 6 : 12} lg={12} key={contact._id}>
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          p: 2.2,
+                          borderRadius: 2.5,
+                          border: '1px solid',
+                          borderColor: isPrim ? 'rgba(16, 185, 129, 0.5)' : 'divider',
+                          bgcolor: isPrim ? 'rgba(16, 185, 129, 0.04)' : '#ffffff',
+                          position: 'relative',
+                          transition: 'all 0.2s',
+                          '&:hover': {
+                            borderColor: isPrim ? '#059669' : '#cbd5e1',
+                          },
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="subtitle2" fontWeight={700} sx={{ color: 'text.primary' }}>
+                              {contact.name}
+                            </Typography>
+                            {isPrim && (
+                              <Chip
+                                icon={<Star sx={{ fontSize: '12px !important', color: '#ffffff' }} />}
+                                label="Primary"
+                                size="small"
+                                sx={{
+                                  height: 20,
+                                  fontSize: 10,
+                                  fontWeight: 700,
+                                  bgcolor: '#059669',
+                                  color: '#ffffff',
+                                  borderRadius: 1,
+                                }}
+                              />
+                            )}
+                          </Box>
+                        </Box>
+
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 1 }}>
+                          {contact.designation || 'No Designation'}
+                        </Typography>
+
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.6, mb: 1.5 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Phone sx={{ fontSize: 14, color: '#059669' }} />
+                            <Typography variant="body2" sx={{ fontSize: 13, color: 'text.primary' }}>
+                              {contact.phone}
+                            </Typography>
+                            <Tooltip title={copiedPhone === contact.phone ? 'Copied!' : 'Copy phone'}>
+                              <IconButton size="small" onClick={() => handleCopy(contact.phone)} sx={{ p: 0.2, color: 'text.secondary' }}>
+                                {copiedPhone === contact.phone ? <CheckIcon sx={{ fontSize: 12, color: 'success.main' }} /> : <ContentCopy sx={{ fontSize: 12 }} />}
+                              </IconButton>
+                            </Tooltip>
+                          </Box>
+
+                          {contact.altPhone && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Phone sx={{ fontSize: 14, color: 'text.secondary' }} />
+                              <Typography variant="caption" color="text.secondary">
+                                Alt: {contact.altPhone}
+                              </Typography>
+                            </Box>
+                          )}
+
+                          {contact.email && (
+                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Email sx={{ fontSize: 14, color: 'text.secondary' }} />
+                              <Typography variant="caption" color="text.secondary">
+                                {contact.email}
+                              </Typography>
+                            </Box>
+                          )}
+                        </Box>
+
+                        {canEdit && (
+                          <Box sx={{ display: 'flex', gap: 1, pt: 1, borderTop: '1px solid', borderColor: 'divider' }}>
+                            <Button
+                              size="small"
+                              variant="text"
+                              startIcon={<Edit sx={{ fontSize: 12 }} />}
+                              onClick={() => handleOpenEditContact(contact)}
+                              sx={{ fontSize: 11, textTransform: 'none', color: 'text.secondary', p: 0.5 }}
+                            >
+                              Edit
+                            </Button>
+                            {!isPrim && (
+                              <Button
+                                size="small"
+                                variant="text"
+                                onClick={() => handleSetPrimary(contact._id)}
+                                sx={{ fontSize: 11, textTransform: 'none', color: '#059669', p: 0.5 }}
+                              >
+                                Set as Primary
+                              </Button>
+                            )}
+                          </Box>
+                        )}
+                      </Paper>
+                    </Grid>
+                  );
+                })}
+              </Grid>
+            )}
+          </Paper>
+
+
           {/* Status & Disposition & Next Follow-up Cards (Immediately above Assignment & Ownership) */}
           <Grid container spacing={2} sx={{ mb: 3 }}>
         {/* Card 1: Status & Latest Disposition */}
@@ -4800,15 +4796,13 @@ export default function LeadDetails() {
 
             {/* Row 1: Left = Call Date, Right = Call Time */}
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 required
                 size="small"
                 label="Call Date *"
-                type="date"
                 value={callData.callDate}
                 onChange={(e) => setCallData((p) => ({ ...p, callDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
@@ -4914,15 +4908,13 @@ export default function LeadDetails() {
 
             {/* Row 4: Next Follow-up Date & Time */}
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 size="small"
                 label="Next Follow-up Date"
-                type="date"
                 value={callData.followUpDate}
                 onChange={(e) => setCallData((p) => ({ ...p, followUpDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
-                inputProps={{ min: formatDateToYYYYMMDD(new Date()) }}
+                min={formatDateToYYYYMMDD(new Date())}
                 helperText="Schedule next follow-up date"
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
@@ -5510,14 +5502,12 @@ export default function LeadDetails() {
 
             <Grid container spacing={2}>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="Scheduled Date"
                   value={assignDate}
                   onChange={(e) => setAssignDate(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                   sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
                 />
               </Grid>
@@ -5722,15 +5712,13 @@ export default function LeadDetails() {
               </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 required
                 size="small"
-                type="date"
                 label="Walk-in Date *"
                 value={walkInData.walkInDate}
                 onChange={(e) => setWalkInData((p) => ({ ...p, walkInDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
@@ -5845,15 +5833,13 @@ export default function LeadDetails() {
               </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 required
                 size="small"
-                type="date"
                 label="Demo Date *"
                 value={demoData.demoDate}
                 onChange={(e) => setDemoData((p) => ({ ...p, demoDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
@@ -6057,15 +6043,13 @@ export default function LeadDetails() {
               </FormControl>
             </Grid>
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 required
                 size="small"
-                type="date"
                 label="Follow-up Date *"
                 value={salesFollowUpData.followUpDate}
                 onChange={(e) => setSalesFollowUpData((p) => ({ ...p, followUpDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
@@ -6163,15 +6147,13 @@ export default function LeadDetails() {
           {rescheduleError && <Alert severity="error" sx={{ mb: 2, borderRadius: 2 }}>{rescheduleError}</Alert>}
           <Grid container spacing={2} sx={{ mt: 0.5 }}>
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 required
                 size="small"
-                type="date"
                 label="Follow-up Date *"
                 value={rescheduleData.followUpDate}
                 onChange={(e) => setRescheduleData((p) => ({ ...p, followUpDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>

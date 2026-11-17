@@ -20,9 +20,13 @@ import {
   Select,
   MenuItem,
   Menu,
+  List,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   Pagination,
+  Popper,
+  ClickAwayListener,
   IconButton,
   Tooltip,
   Skeleton,
@@ -91,7 +95,7 @@ import {
   createSalesFollowUp, transferLead, sendWhatsAppActivity
 } from '../services/leadsService';
 import { getActiveAgents } from '../services/agentService';
-import { formatDate, formatTime, isOverdue, isUpcoming, formatDateToYYYYMMDD, getFollowUpStatus, getDateRangeFromFilter } from '../utils/dateHelpers';
+import { formatDate, formatTime, isOverdue, isUpcoming, formatDateToYYYYMMDD, getFollowUpStatus, getDateRangeFromFilter, combineDateAndTime } from '../utils/dateHelpers';
 import { CALL_DISPOSITIONS, LOST_REASONS, DATE_FILTERS } from '../utils/constants';
 import { getNextAction } from '../utils/nextActionHelper';
 import { getLeadActionMenuItems } from '../utils/leadActionHelper';
@@ -102,6 +106,8 @@ import { useHospitalDetail } from '../context/HospitalDetailContext';
 import RecentActivitySection from '../components/dashboard/RecentActivitySection';
 import AssignedActivitiesSection from '../components/dashboard/AssignedActivitiesSection';
 import DashboardActivityModal from '../components/DashboardActivityModal';
+import LeadCategoryListingModal from '../components/LeadCategoryListingModal';
+import CalendarDatePicker from '../components/CalendarDatePicker';
 import { captureCurrentLocation, getDeviceInstallationId } from '../utils/deviceLocationHelper';
 import VisitLocationCaptureBox from '../components/VisitLocationCaptureBox';
 import { calculateHaversineDistance } from '../utils/geoUtils';
@@ -172,6 +178,11 @@ export default function AgentDashboard() {
 
   // Filters
   const [search, setSearch] = useState('');
+  const [searchAnchorEl, setSearchAnchorEl] = useState(null);
+  const [searchSuggestions, setSearchSuggestions] = useState([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [searchError, setSearchError] = useState(null);
   const [dispositionFilter, setDispositionFilter] = useState('');
   const [followUpFilter, setFollowUpFilter] = useState('');
   const [page, setPage] = useState(1);
@@ -317,7 +328,7 @@ export default function AgentDashboard() {
   const [dashboardLoading, setDashboardLoading] = useState(true);
 
   // Calling Agent Activity Date Filter State
-  const [dateFilter, setDateFilter] = useState('thisMonth');
+  const [dateFilter, setDateFilter] = useState('today');
   const [singleDate, setSingleDate] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
   const [selectedMonth, setSelectedMonth] = useState(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7));
   const [customStart, setCustomStart] = useState('');
@@ -331,6 +342,24 @@ export default function AgentDashboard() {
     icon: null,
     color: '#0284c7',
   });
+
+  // Lead Category Listing Modal state (Total, Hot, Warm, Cold)
+  const [categoryModal, setCategoryModal] = useState({
+    open: false,
+    category: 'all',
+  });
+
+  const handleOpenCategoryModal = (cat) => {
+    setCategoryModal({ open: true, category: cat });
+  };
+
+  const handleCloseCategoryModal = () => {
+    setCategoryModal((prev) => ({ ...prev, open: false }));
+  };
+
+  const handleSelectModalCategory = (cat) => {
+    setCategoryModal((prev) => ({ ...prev, category: cat }));
+  };
 
   const buildDateParams = useCallback(() => {
     const params = {};
@@ -530,6 +559,60 @@ export default function AgentDashboard() {
     fetchMyLeads();
   }, [fetchMyLeads, location.key, location.state]);
 
+  // Live Hospital Search Suggestions (reuses existing listLeads API & role-based scoping)
+  useEffect(() => {
+    const trimmed = search.trim();
+    if (!trimmed) {
+      setSearchSuggestions([]);
+      setSearchLoading(false);
+      setSearchError(null);
+      return;
+    }
+
+    let isCurrent = true;
+    setSearchLoading(true);
+    setSearchError(null);
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await listLeads({ search: trimmed, limit: 8, page: 1 });
+        if (isCurrent) {
+          setSearchSuggestions(res.leads || []);
+          setSearchLoading(false);
+        }
+      } catch (err) {
+        if (isCurrent) {
+          setSearchError('Failed to search hospitals. Please try again.');
+          setSearchLoading(false);
+        }
+      }
+    }, 300);
+
+    return () => {
+      isCurrent = false;
+      clearTimeout(timer);
+    };
+  }, [search]);
+
+  const handleSelectSuggestion = (lead) => {
+    setSearchFocused(false);
+    openHospitalDetail(lead._id, lead);
+  };
+
+  const handleExecuteSearch = () => {
+    setSearchFocused(false);
+    setPage(1);
+    const el = document.getElementById('my-leads-module-container');
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleClearSearch = () => {
+    setSearch('');
+    setSearchSuggestions([]);
+    setSearchFocused(false);
+    setPage(1);
+  };
+
   // Automatic cross-agent synchronization: 30s background polling & window focus refresh
   useEffect(() => {
     const handleSync = () => {
@@ -639,13 +722,11 @@ export default function AgentDashboard() {
         setCallError('Please select a Follow-up Date');
         return;
       }
-      const timeStr = followUpTime || '10:00';
-      const combined = new Date(`${followUpDate}T${timeStr}:00`);
-      if (isNaN(combined.getTime())) {
+      followUpAt = combineDateAndTime(followUpDate, followUpTime || '10:00');
+      if (!followUpAt) {
         setCallError('Please enter a valid Follow-up Date and Time');
         return;
       }
-      followUpAt = combined.toISOString();
     }
 
     setSavingCall(true);
@@ -702,10 +783,7 @@ export default function AgentDashboard() {
   const handleOpenWalkIn = (lead) => {
     setSelectedWalkInLead(lead);
     setWalkInDate(formatDateToYYYYMMDD(new Date()));
-    const now = new Date();
-    const hours = String(now.getHours()).padStart(2, '0');
-    const mins = String(now.getMinutes()).padStart(2, '0');
-    setWalkInTime(`${hours}:${mins}`);
+    setWalkInTime(formatTimeTo24H(new Date()));
     setWalkInRemark('');
     setWalkInError(null);
     setWalkInOpen(true);
@@ -1511,7 +1589,7 @@ export default function AgentDashboard() {
       metric: 'calls',
       label: 'Calls',
       value: daily.calls ?? 0,
-      icon: <PhoneInTalk sx={{ fontSize: 17 }} />,
+      icon: <PhoneInTalk sx={{ fontSize: 18 }} />,
       color: '#0284c7',
       bg: 'rgba(2, 132, 199, 0.08)',
       border: 'rgba(2, 132, 199, 0.22)',
@@ -1521,7 +1599,7 @@ export default function AgentDashboard() {
       metric: 'followups',
       label: 'Follow-ups',
       value: daily.followups ?? 0,
-      icon: <EventRepeat sx={{ fontSize: 17 }} />,
+      icon: <EventRepeat sx={{ fontSize: 18 }} />,
       color: '#2563eb',
       bg: 'rgba(37, 99, 235, 0.08)',
       border: 'rgba(37, 99, 235, 0.22)',
@@ -1531,7 +1609,7 @@ export default function AgentDashboard() {
       metric: 'demos',
       label: 'Demos',
       value: daily.demos ?? daily.demosScheduled ?? 0,
-      icon: <OndemandVideo sx={{ fontSize: 17 }} />,
+      icon: <OndemandVideo sx={{ fontSize: 18 }} />,
       color: '#8b5cf6',
       bg: 'rgba(139, 92, 246, 0.08)',
       border: 'rgba(139, 92, 246, 0.22)',
@@ -1541,71 +1619,21 @@ export default function AgentDashboard() {
       metric: 'demosCompleted',
       label: 'Demos Completed',
       value: daily.demosCompleted ?? 0,
-      icon: <TaskAlt sx={{ fontSize: 17 }} />,
+      icon: <TaskAlt sx={{ fontSize: 18 }} />,
       color: '#059669',
       bg: 'rgba(5, 150, 105, 0.08)',
       border: 'rgba(5, 150, 105, 0.22)',
       onClick: () => handleOpenActivityModal('demosCompleted', 'Demos Completed', <TaskAlt sx={{ fontSize: 20 }} />, '#059669'),
     },
     {
-      metric: 'walkins',
-      label: 'Walk-ins',
-      value: daily.walkins ?? daily.walkinsScheduled ?? 0,
-      icon: <DirectionsWalk sx={{ fontSize: 17 }} />,
-      color: '#d97706',
-      bg: 'rgba(217, 119, 6, 0.08)',
-      border: 'rgba(217, 119, 6, 0.22)',
-      onClick: () => handleOpenActivityModal('walkins', 'Walk-ins', <DirectionsWalk sx={{ fontSize: 20 }} />, '#d97706'),
-    },
-    {
       metric: 'walkinsCompleted',
       label: 'Walk-ins Completed',
       value: daily.walkinsCompleted ?? 0,
-      icon: <CheckCircleOutline sx={{ fontSize: 17 }} />,
+      icon: <CheckCircleOutline sx={{ fontSize: 18 }} />,
       color: '#10b981',
       bg: 'rgba(16, 185, 129, 0.08)',
       border: 'rgba(16, 185, 129, 0.22)',
       onClick: () => handleOpenActivityModal('walkinsCompleted', 'Walk-ins Completed', <CheckCircleOutline sx={{ fontSize: 20 }} />, '#10b981'),
-    },
-    {
-      metric: 'overdueFollowups',
-      label: 'Overdue Follow-ups',
-      value: daily.overdueFollowups ?? 0,
-      icon: <WarningIcon sx={{ fontSize: 17 }} />,
-      color: '#ef4444',
-      bg: 'rgba(239, 68, 68, 0.08)',
-      border: 'rgba(239, 68, 68, 0.22)',
-      onClick: () => handleOpenActivityModal('overdueFollowups', 'Overdue Follow-ups', <WarningIcon sx={{ fontSize: 20 }} />, '#ef4444'),
-    },
-    {
-      metric: 'newLeads',
-      label: 'New Leads',
-      value: daily.newLeads ?? 0,
-      icon: <PersonAdd sx={{ fontSize: 17 }} />,
-      color: '#6366f1',
-      bg: 'rgba(99, 102, 241, 0.08)',
-      border: 'rgba(99, 102, 241, 0.22)',
-      onClick: () => handleOpenActivityModal('newLeads', 'New Leads', <PersonAdd sx={{ fontSize: 20 }} />, '#6366f1'),
-    },
-    {
-      metric: 'won',
-      label: 'Won',
-      value: daily.won ?? 0,
-      icon: <CheckCircle sx={{ fontSize: 17 }} />,
-      color: '#16a34a',
-      bg: 'rgba(22, 163, 74, 0.08)',
-      border: 'rgba(22, 163, 74, 0.22)',
-      onClick: () => handleOpenActivityModal('won', 'Won', <CheckCircle sx={{ fontSize: 20 }} />, '#16a34a'),
-    },
-    {
-      metric: 'lost',
-      label: 'Lost',
-      value: daily.lost ?? 0,
-      icon: <Cancel sx={{ fontSize: 17 }} />,
-      color: '#dc2626',
-      bg: 'rgba(220, 38, 38, 0.08)',
-      border: 'rgba(220, 38, 38, 0.22)',
-      onClick: () => handleOpenActivityModal('lost', 'Lost', <Cancel sx={{ fontSize: 20 }} />, '#dc2626'),
     },
   ];
 
@@ -1636,11 +1664,11 @@ export default function AgentDashboard() {
 
   return (
     <Box sx={{ maxWidth: 1400, mx: 'auto' }}>
-      {/* Top Banner / Calling Agent Workspace Header */}
+      {/* Upper Search & Lead Controls: Create Lead (Left), Live Hospital Search (Center), Classification Cards (Right) */}
       <Paper
         elevation={0}
         sx={{
-          p: { xs: 2.5, md: 3 },
+          p: { xs: 2, md: 2.25 },
           mb: 3,
           borderRadius: 3,
           border: '1px solid',
@@ -1648,7 +1676,7 @@ export default function AgentDashboard() {
           bgcolor: '#ffffff',
           boxShadow: '0 2px 8px rgba(15, 23, 42, 0.04)',
           position: 'relative',
-          overflow: 'hidden',
+          overflow: 'visible',
           '&::before': {
             content: '""',
             position: 'absolute',
@@ -1657,108 +1685,527 @@ export default function AgentDashboard() {
             right: 0,
             height: 4,
             bgcolor: 'primary.main',
+            borderTopLeftRadius: 12,
+            borderTopRightRadius: 12,
           },
         }}
       >
-        <Stack
-          direction={{ xs: 'column', md: 'row' }}
-          spacing={2.5}
-          alignItems={{ xs: 'flex-start', md: 'center' }}
-          justifyContent="space-between"
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 2,
+          }}
         >
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Avatar
-              sx={{
-                width: 52,
-                height: 52,
-                bgcolor: 'primary.main',
-                color: '#ffffff',
-                fontSize: 22,
-                fontWeight: 700,
-                boxShadow: '0 4px 12px rgba(234, 88, 12, 0.3)',
-              }}
-            >
-              {agentName.charAt(0).toUpperCase()}
-            </Avatar>
-            <Box>
-              <Typography variant="h5" fontWeight={700} sx={{ color: '#0f172a', lineHeight: 1.2 }}>
-                Welcome, {agentName}
-              </Typography>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5 }}>
-                <Chip
-                  icon={<BadgeOutlined sx={{ fontSize: '15px !important' }} />}
-                  label={agentRole}
-                  size="small"
-                  sx={{
-                    fontWeight: 600,
-                    bgcolor: 'rgba(234, 88, 12, 0.1)',
-                    color: 'primary.main',
-                    border: '1px solid',
-                    borderColor: 'rgba(234, 88, 12, 0.25)',
-                    fontSize: 12,
-                    height: 24,
-                  }}
-                />
-                <Chip
-                  label={agentRole?.toLowerCase() === 'sales agent' ? 'Sales Workspace' : 'Calling Workspace'}
-                  size="small"
-                  sx={{
-                    fontWeight: 500,
-                    bgcolor: '#f1f5f9',
-                    color: '#475569',
-                    border: '1px solid #cbd5e1',
-                    fontSize: 11,
-                    height: 24,
-                  }}
-                />
-              </Stack>
-            </Box>
-          </Box>
-
-          <Stack direction="row" spacing={1.5} alignItems="center" sx={{ flexWrap: 'wrap', gap: 1 }}>
+          {/* Left & Center: Create Lead and Hospital Search */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              flexWrap: 'wrap',
+              flex: { xs: '1 1 100%', md: '0 1 auto' },
+            }}
+          >
+            {/* Create Lead Button on the Left */}
             <Button
               variant="contained"
-              size="small"
               startIcon={<Add />}
               onClick={() => navigate('/leads/create')}
               sx={{
                 borderRadius: 2,
-                px: 2,
-                py: 0.75,
-                fontWeight: 600,
+                px: 2.5,
+                py: 0.95,
+                fontWeight: 700,
+                fontSize: '0.9rem',
                 textTransform: 'none',
-                boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
+                bgcolor: '#ea580c',
+                whiteSpace: 'nowrap',
+                boxShadow: '0 4px 14px rgba(234, 88, 12, 0.28)',
                 '&:hover': {
-                  boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)',
+                  bgcolor: '#c2410c',
+                  boxShadow: '0 6px 18px rgba(234, 88, 12, 0.38)',
                 },
               }}
             >
               Create Lead
             </Button>
-            <Button
-              variant="outlined"
-              color="error"
-              size="small"
-              startIcon={<LogoutIcon />}
-              onClick={handleLogout}
+
+            {/* Hospital Search in the Middle Section with Live Dynamic Suggestions */}
+            <ClickAwayListener onClickAway={() => setSearchFocused(false)}>
+              <Box sx={{ position: 'relative' }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <TextField
+                    size="small"
+                    placeholder="Search hospital, contact or phone..."
+                    value={search}
+                    onChange={(e) => {
+                      setSearch(e.target.value);
+                      setSearchAnchorEl(e.currentTarget);
+                      setSearchFocused(true);
+                    }}
+                    onFocus={(e) => {
+                      setSearchAnchorEl(e.currentTarget);
+                      setSearchFocused(true);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        handleExecuteSearch();
+                      } else if (e.key === 'Escape') {
+                        setSearchFocused(false);
+                      }
+                    }}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon sx={{ color: '#ea580c', fontSize: 20 }} />
+                        </InputAdornment>
+                      ),
+                      endAdornment: (
+                        <InputAdornment position="end">
+                          {searchLoading && <CircularProgress size={16} sx={{ color: '#ea580c', mr: 0.5 }} />}
+                          {search ? (
+                            <IconButton size="small" onClick={handleClearSearch} edge="end">
+                              <Clear fontSize="small" />
+                            </IconButton>
+                          ) : null}
+                        </InputAdornment>
+                      ),
+                    }}
+                    sx={{
+                      width: { xs: 220, sm: 280, md: 320, lg: 360 },
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: 2,
+                        bgcolor: '#f8fafc',
+                        fontSize: '0.875rem',
+                      },
+                    }}
+                  />
+
+                  <Button
+                    variant="outlined"
+                    startIcon={<SearchIcon sx={{ fontSize: 16 }} />}
+                    onClick={handleExecuteSearch}
+                    sx={{
+                      borderRadius: 2,
+                      px: 1.8,
+                      py: 0.85,
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      fontSize: '0.85rem',
+                      borderColor: '#cbd5e1',
+                      color: '#475569',
+                      bgcolor: '#ffffff',
+                      whiteSpace: 'nowrap',
+                      '&:hover': {
+                        borderColor: '#ea580c',
+                        color: '#ea580c',
+                        bgcolor: 'rgba(234, 88, 12, 0.04)',
+                      },
+                    }}
+                  >
+                    Search
+                  </Button>
+                </Box>
+
+                {/* Live Suggestions Dropdown */}
+                <Popper
+                  open={Boolean(searchFocused && search.trim() && searchAnchorEl)}
+                  anchorEl={searchAnchorEl}
+                  placement="bottom-start"
+                  style={{ width: searchAnchorEl ? Math.max(searchAnchorEl.clientWidth, 360) : 360, zIndex: 1300 }}
+                >
+                  <Paper
+                    elevation={6}
+                    sx={{
+                      mt: 1,
+                      borderRadius: 2.5,
+                      border: '1px solid #e2e8f0',
+                      bgcolor: '#ffffff',
+                      boxShadow: '0 12px 32px rgba(15, 23, 42, 0.15)',
+                      maxHeight: 380,
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {searchLoading && searchSuggestions.length === 0 ? (
+                      <Box sx={{ p: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1.5 }}>
+                        <CircularProgress size={18} sx={{ color: '#ea580c' }} />
+                        <Typography variant="body2" sx={{ color: '#64748b', fontSize: '0.875rem' }}>
+                          Searching hospitals...
+                        </Typography>
+                      </Box>
+                    ) : searchError ? (
+                      <Box sx={{ p: 2, textAlign: 'center' }}>
+                        <Typography variant="body2" color="error" sx={{ fontSize: '0.875rem' }}>
+                          {searchError}
+                        </Typography>
+                      </Box>
+                    ) : searchSuggestions.length === 0 ? (
+                      <Box sx={{ p: 2.5, textAlign: 'center' }}>
+                        <Typography variant="body2" sx={{ color: '#64748b', fontSize: '0.875rem', fontWeight: 600 }}>
+                          No matching hospitals found for &quot;{search}&quot;
+                        </Typography>
+                        <Typography variant="caption" sx={{ color: '#94a3b8', display: 'block', mt: 0.5 }}>
+                          Try searching by hospital name, contact person, or phone number.
+                        </Typography>
+                      </Box>
+                    ) : (
+                      <List disablePadding>
+                        <Box sx={{ px: 2, py: 0.75, bgcolor: '#f8fafc', borderBottom: '1px solid #f1f5f9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Typography variant="caption" fontWeight={700} sx={{ color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                            Matching Hospitals ({searchSuggestions.length})
+                          </Typography>
+                          <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.7rem' }}>
+                            Click to view details
+                          </Typography>
+                        </Box>
+                        {searchSuggestions.map((lead) => {
+                          const contact = lead.primaryContact || (lead.contacts && lead.contacts[0]) || {};
+                          const contactName = contact.name || lead.contactPersonName || '—';
+                          const contactPhone = contact.phone || lead.phone || '—';
+                          const leadIdText = lead.leadNumber ? `#${lead.leadNumber}` : `#${lead._id.slice(-5)}`;
+                          const temp = (lead.leadTemperature || lead.temperature || '').toLowerCase();
+
+                          return (
+                            <ListItemButton
+                              key={lead._id}
+                              onClick={() => handleSelectSuggestion(lead)}
+                              sx={{
+                                px: 2,
+                                py: 1.25,
+                                borderBottom: '1px solid #f1f5f9',
+                                '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.05)' },
+                              }}
+                            >
+                              <ListItemIcon sx={{ minWidth: 34 }}>
+                                <BusinessIcon sx={{ color: '#ea580c', fontSize: 20 }} />
+                              </ListItemIcon>
+                              <ListItemText
+                                primary={
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                                    <Typography variant="body2" fontWeight={700} sx={{ color: '#0f172a' }}>
+                                      {lead.organizationName}
+                                    </Typography>
+                                    <Chip
+                                      label={leadIdText}
+                                      size="small"
+                                      sx={{ height: 20, fontSize: '0.72rem', fontWeight: 600, bgcolor: '#f1f5f9', color: '#475569' }}
+                                    />
+                                    {temp === 'hot' && (
+                                      <Chip label="🔥 Hot" size="small" sx={{ height: 20, fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(239, 68, 68, 0.1)', color: '#dc2626' }} />
+                                    )}
+                                    {temp === 'warm' && (
+                                      <Chip label="🟠 Warm" size="small" sx={{ height: 20, fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#c2410c' }} />
+                                    )}
+                                    {temp === 'cold' && (
+                                      <Chip label="❄️ Cold" size="small" sx={{ height: 20, fontSize: '0.72rem', fontWeight: 700, bgcolor: 'rgba(2, 132, 199, 0.1)', color: '#0284c7' }} />
+                                    )}
+                                  </Box>
+                                }
+                                secondary={
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
+                                    <Typography variant="caption" sx={{ color: '#64748b' }}>
+                                      Contact: <strong>{contactName}</strong>
+                                    </Typography>
+                                    <Typography variant="caption" sx={{ color: '#64748b' }}>
+                                      Phone: <strong>{contactPhone}</strong>
+                                    </Typography>
+                                    {lead.latestDisposition && (
+                                      <Typography variant="caption" sx={{ color: '#0284c7', fontWeight: 600 }}>
+                                        • {lead.latestDisposition}
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                }
+                              />
+                            </ListItemButton>
+                          );
+                        })}
+                      </List>
+                    )}
+                  </Paper>
+                </Popper>
+              </Box>
+            </ClickAwayListener>
+          </Box>
+
+          {/* Right-Side Classification Summary Cards */}
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.25,
+              flexWrap: 'wrap',
+              justifyContent: { xs: 'flex-start', md: 'flex-end' },
+            }}
+          >
+            <Paper
+              elevation={0}
+              onClick={() => handleOpenCategoryModal('all')}
               sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                px: 1.75,
+                py: 0.85,
                 borderRadius: 2,
-                px: 2,
-                py: 0.75,
-                fontWeight: 600,
-                textTransform: 'none',
-                borderColor: '#fca5a5',
+                cursor: 'pointer',
+                bgcolor: 'rgba(234, 88, 12, 0.08)',
+                border: '1px solid rgba(234, 88, 12, 0.25)',
+                transition: 'all 0.15s ease',
                 '&:hover': {
-                  borderColor: '#ef4444',
-                  bgcolor: 'rgba(239, 68, 68, 0.06)',
+                  bgcolor: 'rgba(234, 88, 12, 0.14)',
+                  borderColor: '#ea580c',
+                  transform: 'translateY(-1px)',
                 },
               }}
             >
-              Logout
+              <BusinessIcon sx={{ fontSize: 18, color: '#ea580c' }} />
+              <Box>
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.72rem', display: 'block', lineHeight: 1 }}>
+                  Total Leads
+                </Typography>
+                <Typography variant="body2" fontWeight={800} sx={{ color: '#ea580c', lineHeight: 1.2 }}>
+                  {dashboardSummary?.totalLeads ?? totalLeads}
+                </Typography>
+              </Box>
+            </Paper>
+
+            <Paper
+              elevation={0}
+              onClick={() => handleOpenCategoryModal('hot')}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                px: 1.75,
+                py: 0.85,
+                borderRadius: 2,
+                cursor: 'pointer',
+                bgcolor: 'rgba(239, 68, 68, 0.08)',
+                border: '1px solid rgba(239, 68, 68, 0.25)',
+                transition: 'all 0.15s ease',
+                '&:hover': {
+                  bgcolor: 'rgba(239, 68, 68, 0.14)',
+                  borderColor: '#dc2626',
+                  transform: 'translateY(-1px)',
+                },
+              }}
+            >
+              <Whatshot sx={{ fontSize: 18, color: '#dc2626' }} />
+              <Box>
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.72rem', display: 'block', lineHeight: 1 }}>
+                  Hot Leads
+                </Typography>
+                <Typography variant="body2" fontWeight={800} sx={{ color: '#dc2626', lineHeight: 1.2 }}>
+                  {dashboardSummary?.hotLeads ?? 0}
+                </Typography>
+              </Box>
+            </Paper>
+
+            <Paper
+              elevation={0}
+              onClick={() => handleOpenCategoryModal('warm')}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                px: 1.75,
+                py: 0.85,
+                borderRadius: 2,
+                cursor: 'pointer',
+                bgcolor: 'rgba(234, 88, 12, 0.08)',
+                border: '1px solid rgba(234, 88, 12, 0.25)',
+                transition: 'all 0.15s ease',
+                '&:hover': {
+                  bgcolor: 'rgba(234, 88, 12, 0.14)',
+                  borderColor: '#c2410c',
+                  transform: 'translateY(-1px)',
+                },
+              }}
+            >
+              <Typography sx={{ fontSize: 15, lineHeight: 1 }}>🟠</Typography>
+              <Box>
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.72rem', display: 'block', lineHeight: 1 }}>
+                  Warm Leads
+                </Typography>
+                <Typography variant="body2" fontWeight={800} sx={{ color: '#c2410c', lineHeight: 1.2 }}>
+                  {dashboardSummary?.warmLeads ?? 0}
+                </Typography>
+              </Box>
+            </Paper>
+
+            <Paper
+              elevation={0}
+              onClick={() => handleOpenCategoryModal('cold')}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                px: 1.75,
+                py: 0.85,
+                borderRadius: 2,
+                cursor: 'pointer',
+                bgcolor: 'rgba(2, 132, 199, 0.08)',
+                border: '1px solid rgba(2, 132, 199, 0.25)',
+                transition: 'all 0.15s ease',
+                '&:hover': {
+                  bgcolor: 'rgba(2, 132, 199, 0.14)',
+                  borderColor: '#0284c7',
+                  transform: 'translateY(-1px)',
+                },
+              }}
+            >
+              <AcUnit sx={{ fontSize: 18, color: '#0284c7' }} />
+              <Box>
+                <Typography variant="caption" sx={{ color: '#64748b', fontSize: '0.72rem', display: 'block', lineHeight: 1 }}>
+                  Cold Leads
+                </Typography>
+                <Typography variant="body2" fontWeight={800} sx={{ color: '#0284c7', lineHeight: 1.2 }}>
+                  {dashboardSummary?.coldLeads ?? 0}
+                </Typography>
+              </Box>
+            </Paper>
+          </Box>
+        </Box>
+
+        {/* Row 2: Integrated My Leads Filters & Controls */}
+        <Divider sx={{ my: 2, borderColor: '#f1f5f9' }} />
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: 1.5,
+          }}
+        >
+          {/* Left: Disposition & Follow-up Status Filters */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
+            <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 190 } }}>
+              <InputLabel id="upper-disposition-label" sx={{ fontSize: '0.85rem' }}>Latest Disposition</InputLabel>
+              <Select
+                labelId="upper-disposition-label"
+                value={dispositionFilter}
+                label="Latest Disposition"
+                onChange={(e) => {
+                  setDispositionFilter(e.target.value);
+                  setPage(1);
+                }}
+                sx={{ borderRadius: 2, bgcolor: '#f8fafc', fontSize: '0.85rem' }}
+              >
+                <MenuItem value="">All Dispositions</MenuItem>
+                {CALL_DISPOSITIONS.map((d) => (
+                  <MenuItem key={d} value={d} sx={{ fontSize: '0.85rem' }}>{d}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+
+            <FormControl size="small" sx={{ minWidth: { xs: '100%', sm: 180 } }}>
+              <InputLabel id="upper-followup-label" sx={{ fontSize: '0.85rem' }}>Follow-up Status</InputLabel>
+              <Select
+                labelId="upper-followup-label"
+                value={followUpFilter}
+                label="Follow-up Status"
+                onChange={(e) => {
+                  setFollowUpFilter(e.target.value);
+                  setPage(1);
+                }}
+                sx={{ borderRadius: 2, bgcolor: '#f8fafc', fontSize: '0.85rem' }}
+              >
+                <MenuItem value="">All Follow-ups</MenuItem>
+                <MenuItem value="today" sx={{ fontSize: '0.85rem' }}>Today</MenuItem>
+                <MenuItem value="upcoming" sx={{ fontSize: '0.85rem' }}>Upcoming</MenuItem>
+                <MenuItem value="overdue" sx={{ fontSize: '0.85rem' }}>Overdue</MenuItem>
+              </Select>
+            </FormControl>
+
+            {(search || dispositionFilter || followUpFilter) && (
+              <Button
+                size="small"
+                variant="outlined"
+                color="inherit"
+                onClick={() => {
+                  setSearch('');
+                  setDispositionFilter('');
+                  setFollowUpFilter('');
+                  setPage(1);
+                }}
+                startIcon={<Clear fontSize="small" />}
+                sx={{
+                  borderRadius: 2,
+                  textTransform: 'none',
+                  color: '#64748b',
+                  borderColor: '#cbd5e1',
+                  py: 0.75,
+                  px: 1.5,
+                  fontSize: '0.85rem',
+                  '&:hover': {
+                    borderColor: '#94a3b8',
+                    bgcolor: 'rgba(100, 116, 139, 0.04)',
+                  },
+                }}
+              >
+                Clear Filters
+              </Button>
+            )}
+          </Box>
+
+          {/* Right: Refresh & Transfer History Controls */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<RefreshIcon sx={{ fontSize: 18 }} />}
+              onClick={() => {
+                fetchMyLeads();
+                fetchDashboardData();
+              }}
+              sx={{
+                borderRadius: 2,
+                textTransform: 'none',
+                color: '#475569',
+                borderColor: '#cbd5e1',
+                bgcolor: '#ffffff',
+                fontSize: '0.85rem',
+                '&:hover': { borderColor: '#ea580c', color: '#ea580c', bgcolor: 'rgba(234, 88, 12, 0.04)' },
+              }}
+            >
+              Refresh
             </Button>
-          </Stack>
-        </Stack>
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<SwapHoriz sx={{ fontSize: 18 }} />}
+              onClick={() => navigate('/transfer-requests')}
+              sx={{
+                borderRadius: 2,
+                textTransform: 'none',
+                color: '#475569',
+                borderColor: '#cbd5e1',
+                bgcolor: '#ffffff',
+                fontSize: '0.85rem',
+                '&:hover': { borderColor: '#ea580c', color: '#ea580c', bgcolor: 'rgba(234, 88, 12, 0.04)' },
+              }}
+            >
+              Transfer History
+            </Button>
+          </Box>
+        </Box>
       </Paper>
+
+      {/* Today's Actions Queue (Placed immediately below Upper Search & Controls) */}
+      <TodayActionsSection
+        todayActions={todayActions}
+        loading={dashboardLoading}
+        onActionClick={handleTodayActionTrigger}
+        onCopyPhone={handleCopyPhone}
+        copiedId={copiedId}
+        navigate={navigate}
+        agentRole={agentRole}
+      />
 
       {/* Activity Details Modal */}
       <DashboardActivityModal
@@ -1782,6 +2229,21 @@ export default function AgentDashboard() {
         filterAgentId={user?._id || ''}
         selectedAgentName={agentName}
         selectedDateLabel={selectedDateLabel}
+      />
+
+      {/* Lead Category Hospital Listing Modal (Total Leads, Hot, Warm, Cold) */}
+      <LeadCategoryListingModal
+        open={categoryModal.open}
+        onClose={handleCloseCategoryModal}
+        category={categoryModal.category}
+        onSelectCategory={handleSelectModalCategory}
+        filterAgentId={user?._id || ''}
+        counts={{
+          totalLeads: dashboardSummary?.totalLeads ?? totalLeads,
+          hotLeads: dashboardSummary?.hotLeads ?? 0,
+          warmLeads: dashboardSummary?.warmLeads ?? 0,
+          coldLeads: dashboardSummary?.coldLeads ?? 0,
+        }}
       />
 
       {/* Date Filter & Daily Activity Area for Calling Agent */}
@@ -1841,56 +2303,25 @@ export default function AgentDashboard() {
               </Select>
             </FormControl>
           </Grid>
-          {dateFilter === 'single' && (
-            <Grid item xs={6} sm={4} md={2.5}>
-              <TextField
-                fullWidth
-                size="small"
-                type="date"
-                label="Select Date"
-                id="agent-dashboard-single-date-picker"
-                value={singleDate}
-                onChange={(e) => setSingleDate(e.target.value)}
-                InputLabelProps={{ shrink: true }}
-              />
-            </Grid>
-          )}
-          {dateFilter === 'month' && (
-            <Grid item xs={6} sm={4} md={2.5}>
-              <TextField
-                fullWidth
-                size="small"
-                type="month"
-                label="Select Month"
-                id="agent-dashboard-month-picker"
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(e.target.value)}
-                InputLabelProps={{ shrink: true }}
-              />
-            </Grid>
-          )}
+
           {dateFilter === 'custom' && (
             <>
               <Grid item xs={6} sm={4} md={2}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="From"
                   value={customStart}
                   onChange={(e) => setCustomStart(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                 />
               </Grid>
               <Grid item xs={6} sm={4} md={2}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="To"
                   value={customEnd}
                   onChange={(e) => setCustomEnd(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                 />
               </Grid>
             </>
@@ -1901,11 +2332,9 @@ export default function AgentDashboard() {
                 variant="outlined"
                 size="small"
                 onClick={() => {
-                  setDateFilter('thisMonth');
+                  setDateFilter('today');
                   setCustomStart('');
                   setCustomEnd('');
-                  setSingleDate(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }));
-                  setSelectedMonth(new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7));
                 }}
                 fullWidth
                 sx={{ borderRadius: 2, textTransform: 'none', py: 0.75, color: 'text.secondary', borderColor: 'divider' }}
@@ -1945,7 +2374,7 @@ export default function AgentDashboard() {
         {/* 10 Metric Dynamic Activity Cards */}
         <Grid container spacing={1.2}>
           {dailyActivityItems.map((item, idx) => (
-            <Grid item xs={6} sm={4} md={2.4} key={item.metric || idx}>
+            <Grid item xs={12} sm={6} md={2.4} key={item.metric || idx}>
               <Paper
                 elevation={0}
                 id={`agent-activity-card-${item.metric || idx}`}
@@ -2033,192 +2462,6 @@ export default function AgentDashboard() {
         />
       )}
 
-      {/* Summary Section — Total Leads and Temperature Summary Cards */}
-      <Grid container spacing={2} sx={{ mb: 3 }}>
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            onClick={handleTotalLeadsClick}
-            sx={{
-              p: 2.25,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'rgba(234, 88, 12, 0.25)',
-              bgcolor: '#ffffff',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 10px rgba(234, 88, 12, 0.05)',
-              '&:hover': {
-                transform: 'translateY(-2px)',
-                boxShadow: '0 8px 24px rgba(234, 88, 12, 0.16)',
-                borderColor: '#ea580c',
-              },
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Box>
-                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
-                  Total Leads
-                </Typography>
-                {dashboardLoading ? (
-                  <Skeleton width={70} height={42} />
-                ) : (
-                  <Typography variant="h4" fontWeight={800} sx={{ color: '#ea580c', lineHeight: 1.1 }}>
-                    {dashboardSummary?.totalLeads ?? totalLeads}
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
-                  My accessible leads
-                </Typography>
-              </Box>
-              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#ea580c', flexShrink: 0 }}>
-                <BusinessIcon sx={{ fontSize: 26 }} />
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            onClick={() => navigate('/leads?temperature=Hot')}
-            sx={{
-              p: 2.25,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'rgba(239, 68, 68, 0.25)',
-              bgcolor: '#ffffff',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 10px rgba(239, 68, 68, 0.05)',
-              '&:hover': {
-                transform: 'translateY(-2px)',
-                boxShadow: '0 8px 24px rgba(239, 68, 68, 0.16)',
-                borderColor: '#dc2626',
-              },
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Box>
-                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
-                  🔥 Hot Leads
-                </Typography>
-                {dashboardLoading ? (
-                  <Skeleton width={70} height={42} />
-                ) : (
-                  <Typography variant="h4" fontWeight={800} sx={{ color: '#dc2626', lineHeight: 1.1 }}>
-                    {dashboardSummary?.hotLeads ?? 0}
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
-                  High purchase intent
-                </Typography>
-              </Box>
-              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(239, 68, 68, 0.1)', color: '#dc2626', flexShrink: 0 }}>
-                <Whatshot sx={{ fontSize: 26 }} />
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            onClick={() => navigate('/leads?temperature=Warm')}
-            sx={{
-              p: 2.25,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'rgba(234, 88, 12, 0.25)',
-              bgcolor: '#ffffff',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 10px rgba(234, 88, 12, 0.05)',
-              '&:hover': {
-                transform: 'translateY(-2px)',
-                boxShadow: '0 8px 24px rgba(234, 88, 12, 0.16)',
-                borderColor: '#c2410c',
-              },
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Box>
-                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
-                  🟠 Warm Leads
-                </Typography>
-                {dashboardLoading ? (
-                  <Skeleton width={70} height={42} />
-                ) : (
-                  <Typography variant="h4" fontWeight={800} sx={{ color: '#c2410c', lineHeight: 1.1 }}>
-                    {dashboardSummary?.warmLeads ?? 0}
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
-                  Engaged / Follow-up
-                </Typography>
-              </Box>
-              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(234, 88, 12, 0.1)', color: '#c2410c', flexShrink: 0 }}>
-                <Typography sx={{ fontSize: 22, lineHeight: 1 }}>🟠</Typography>
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-
-        <Grid item xs={12} sm={6} md={3}>
-          <Paper
-            elevation={0}
-            onClick={() => navigate('/leads?temperature=Cold')}
-            sx={{
-              p: 2.25,
-              borderRadius: 3,
-              border: '1px solid',
-              borderColor: 'rgba(2, 132, 199, 0.25)',
-              bgcolor: '#ffffff',
-              cursor: 'pointer',
-              transition: 'all 0.2s ease-in-out',
-              boxShadow: '0 2px 10px rgba(2, 132, 199, 0.05)',
-              '&:hover': {
-                transform: 'translateY(-2px)',
-                boxShadow: '0 8px 24px rgba(2, 132, 199, 0.16)',
-                borderColor: '#0284c7',
-              },
-            }}
-          >
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <Box>
-                <Typography variant="body2" sx={{ color: '#64748b', fontWeight: 600, fontSize: '0.875rem', mb: 0.5 }}>
-                  ❄️ Cold Leads
-                </Typography>
-                {dashboardLoading ? (
-                  <Skeleton width={70} height={42} />
-                ) : (
-                  <Typography variant="h4" fontWeight={800} sx={{ color: '#0284c7', lineHeight: 1.1 }}>
-                    {dashboardSummary?.coldLeads ?? 0}
-                  </Typography>
-                )}
-                <Typography variant="caption" sx={{ color: '#94a3b8', fontSize: '0.75rem', display: 'block', mt: 0.5 }}>
-                  Low engagement
-                </Typography>
-              </Box>
-              <Box sx={{ width: 48, height: 48, borderRadius: 2.5, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: 'rgba(2, 132, 199, 0.1)', color: '#0284c7', flexShrink: 0 }}>
-                <AcUnit sx={{ fontSize: 26 }} />
-              </Box>
-            </Box>
-          </Paper>
-        </Grid>
-      </Grid>
-
-      {/* Today's Actions Queue (Requirement 3) */}
-      <TodayActionsSection
-        todayActions={todayActions}
-        loading={dashboardLoading}
-        onActionClick={handleTodayActionTrigger}
-        onCopyPhone={handleCopyPhone}
-        copiedId={copiedId}
-        navigate={navigate}
-        agentRole={agentRole}
-      />
-
       {/* "My Leads" Module */}
       <Paper
         id="my-leads-module-container"
@@ -2232,10 +2475,10 @@ export default function AgentDashboard() {
           overflow: 'hidden',
         }}
       >
-        {/* Module Header & Filters */}
+        {/* Module Header */}
         <Box sx={{ p: { xs: 2, sm: 2.5 }, borderBottom: '1px solid #e2e8f0' }}>
-          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 1.5 }}>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1.5 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, flexWrap: 'wrap' }}>
               <Typography variant="h6" fontWeight={700} sx={{ color: '#0f172a' }}>
                 My Leads
               </Typography>
@@ -2245,6 +2488,29 @@ export default function AgentDashboard() {
                 color="primary"
                 sx={{ fontWeight: 600, height: 24 }}
               />
+              {(search || dispositionFilter || followUpFilter) && (
+                <Chip
+                  label={
+                    search && (dispositionFilter || followUpFilter)
+                      ? 'Filtered'
+                      : search
+                      ? `Search: "${search}"`
+                      : dispositionFilter
+                      ? `Disposition: ${dispositionFilter}`
+                      : `Follow-up: ${followUpFilter}`
+                  }
+                  size="small"
+                  variant="outlined"
+                  color="warning"
+                  onDelete={() => {
+                    setSearch('');
+                    setDispositionFilter('');
+                    setFollowUpFilter('');
+                    setPage(1);
+                  }}
+                  sx={{ height: 24, fontSize: '0.75rem', fontWeight: 600 }}
+                />
+              )}
             </Box>
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
               <Button
@@ -2265,100 +2531,8 @@ export default function AgentDashboard() {
               >
                 Transfer History
               </Button>
-              <Button
-                size="small"
-                variant="contained"
-                startIcon={<Add />}
-                onClick={() => navigate('/leads/create')}
-                sx={{
-                  borderRadius: 2,
-                  textTransform: 'none',
-                  fontWeight: 600,
-                  boxShadow: '0 4px 12px rgba(234, 88, 12, 0.25)',
-                  '&:hover': {
-                    boxShadow: '0 6px 16px rgba(234, 88, 12, 0.35)',
-                  },
-                }}
-              >
-                Create Lead
-              </Button>
             </Box>
           </Box>
-
-          {/* Search & Filter Controls */}
-          <Grid container spacing={1.5} alignItems="center">
-            <Grid item xs={12} sm={6} md={4}>
-              <TextField
-                fullWidth
-                size="small"
-                placeholder="Search lead, contact or phone..."
-                value={search}
-                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                InputProps={{
-                  startAdornment: (
-                    <InputAdornment position="start">
-                      <SearchIcon sx={{ color: '#94a3b8', fontSize: 20 }} />
-                    </InputAdornment>
-                  ),
-                  endAdornment: search ? (
-                    <InputAdornment position="end">
-                      <IconButton size="small" onClick={() => { setSearch(''); setPage(1); }}>
-                        <Clear fontSize="small" />
-                      </IconButton>
-                    </InputAdornment>
-                  ) : null,
-                }}
-                sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
-              />
-            </Grid>
-
-            <Grid item xs={6} sm={3} md={3}>
-              <FormControl fullWidth size="small">
-                <InputLabel>Latest Disposition</InputLabel>
-                <Select
-                  value={dispositionFilter}
-                  label="Latest Disposition"
-                  onChange={(e) => { setDispositionFilter(e.target.value); setPage(1); }}
-                  sx={{ borderRadius: 2 }}
-                >
-                  <MenuItem value="">All Dispositions</MenuItem>
-                  {CALL_DISPOSITIONS.map((d) => (
-                    <MenuItem key={d} value={d}>{d}</MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-            </Grid>
-
-            <Grid item xs={6} sm={3} md={3}>
-              <FormControl fullWidth size="small">
-                <InputLabel>Follow-up Status</InputLabel>
-                <Select
-                  value={followUpFilter}
-                  label="Follow-up Status"
-                  onChange={(e) => { setFollowUpFilter(e.target.value); setPage(1); }}
-                  sx={{ borderRadius: 2 }}
-                >
-                  <MenuItem value="">All Follow-ups</MenuItem>
-                  <MenuItem value="upcoming">Upcoming</MenuItem>
-                  <MenuItem value="overdue">Overdue</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-
-            {(search || dispositionFilter || followUpFilter) && (
-              <Grid item xs={12} sm="auto">
-                <Button
-                  size="small"
-                  variant="text"
-                  color="inherit"
-                  onClick={() => { setSearch(''); setDispositionFilter(''); setFollowUpFilter(''); setPage(1); }}
-                  sx={{ borderRadius: 2, textTransform: 'none', color: '#64748b' }}
-                >
-                  Clear Filters
-                </Button>
-              </Grid>
-            )}
-          </Grid>
         </Box>
 
         {/* My Leads Table */}
@@ -3129,16 +3303,14 @@ export default function AgentDashboard() {
               {scheduleFollowUp && (
                 <Grid container spacing={2} sx={{ mt: 0.5 }}>
                   <Grid item xs={12} sm={6}>
-                    <TextField
+                    <CalendarDatePicker
                       fullWidth
                       required
                       size="small"
-                      type="date"
                       label="Follow-up Date *"
                       value={followUpDate}
                       onChange={(e) => setFollowUpDate(e.target.value)}
-                      InputLabelProps={{ shrink: true }}
-                      inputProps={{ min: formatDateToYYYYMMDD(new Date()) }}
+                      min={formatDateToYYYYMMDD(new Date())}
                       sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
                     />
                   </Grid>
@@ -3304,15 +3476,13 @@ export default function AgentDashboard() {
           <Stack spacing={2.5}>
             <Grid container spacing={2}>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   required
                   size="small"
-                  type="date"
                   label="Walk-in Date *"
                   value={walkInDate}
                   onChange={(e) => setWalkInDate(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                   sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
                 />
               </Grid>
@@ -3514,15 +3684,13 @@ export default function AgentDashboard() {
           <Stack spacing={2.5}>
             <Grid container spacing={2}>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   required
                   size="small"
-                  type="date"
                   label="Demo Date *"
                   value={demoDate}
                   onChange={(e) => setDemoDate(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                   sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
                 />
               </Grid>
@@ -4226,14 +4394,12 @@ export default function AgentDashboard() {
 
             <Grid container spacing={2}>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="Scheduled Date"
                   value={assignDate}
                   onChange={(e) => setAssignDate(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                   sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
                 />
               </Grid>
@@ -4330,14 +4496,12 @@ export default function AgentDashboard() {
           <Stack spacing={2.5}>
             <Grid container spacing={2}>
               <Grid item xs={12} sm={6}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="Follow-up Date"
                   value={salesFollowUpDate}
                   onChange={(e) => setSalesFollowUpDate(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                   sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
                 />
               </Grid>

@@ -66,13 +66,8 @@ export const ORGANIZATION_TYPES = [
 export const SOFTWARE_OPTIONS = ['Yes', 'No', 'Unknown'];
 
 export const DATE_FILTERS = [
-  { label: 'All Dates', value: '' },
   { label: 'Today', value: 'today' },
   { label: 'Yesterday', value: 'yesterday' },
   { label: 'This Month', value: 'thisMonth' },
-  { label: 'Last 7 Days', value: 'last7' },
-  { label: 'Last 30 Days', value: 'last30' },
-  { label: 'Single Date', value: 'single' },
-  { label: 'Month', value: 'month' },
   { label: 'Custom Range', value: 'custom' },
 ];

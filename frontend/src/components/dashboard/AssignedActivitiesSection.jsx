@@ -58,6 +58,7 @@ import {
   WhatsApp as WhatsAppIcon,
 } from '@mui/icons-material';
 import { formatDate, formatTime, formatDateToYYYYMMDD } from '../../utils/dateHelpers';
+import CalendarDatePicker from '../CalendarDatePicker';
 
 // Styling badges for activity types
 const getActivityTypeBadge = (type) => {
@@ -1323,12 +1324,11 @@ export default function AssignedActivitiesSection({
 
           <Grid container spacing={2} sx={{ mb: 2 }}>
             <Grid item xs={12} sm={7}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
+                required
                 size="small"
-                type="date"
                 label="New Scheduled Date *"
-                InputLabelProps={{ shrink: true }}
                 value={rescheduleDate}
                 onChange={(e) => setRescheduleDate(e.target.value)}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}

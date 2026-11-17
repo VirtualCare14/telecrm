@@ -346,13 +346,52 @@ export default function AppLayout({ children }) {
                 <MenuIcon />
               </IconButton>
             )}
-            <Box sx={{ flex: 1 }}>
-              <Typography variant="body2" sx={{ color: '#64748b', fontSize: 12 }}>
-                {new Date().toLocaleDateString('en-IN', { weekday: 'long' })}
-              </Typography>
-              <Typography variant="body1" fontWeight={600} sx={{ fontSize: 14, color: '#0f172a' }}>
-                {new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
-              </Typography>
+            <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', gap: { xs: 1.5, sm: 2.5 }, flexWrap: 'wrap' }}>
+              <Box>
+                <Typography variant="body2" sx={{ color: '#64748b', fontSize: 12, lineHeight: 1.2 }}>
+                  {new Date().toLocaleDateString('en-IN', { weekday: 'long' })}
+                </Typography>
+                <Typography variant="body1" fontWeight={600} sx={{ fontSize: 14, color: '#0f172a', lineHeight: 1.2 }}>
+                  {new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                </Typography>
+              </Box>
+
+              <Divider
+                orientation="vertical"
+                flexItem
+                sx={{
+                  height: 28,
+                  alignSelf: 'center',
+                  borderColor: '#e2e8f0',
+                  display: { xs: 'none', sm: 'block' },
+                }}
+              />
+
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                <Typography
+                  variant="subtitle1"
+                  fontWeight={700}
+                  sx={{
+                    color: '#0f172a',
+                    fontSize: { xs: '0.875rem', sm: '1.05rem' },
+                    lineHeight: 1.2,
+                  }}
+                >
+                  Welcome, {user?.fullName || user?.username || 'Agent'}
+                </Typography>
+                <Chip
+                  label={isAdmin ? 'Admin' : (user?.agentRole || 'Calling Agent')}
+                  size="small"
+                  sx={{
+                    height: 22,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    bgcolor: 'rgba(234, 88, 12, 0.1)',
+                    color: 'primary.main',
+                    border: '1px solid rgba(234, 88, 12, 0.25)',
+                  }}
+                />
+              </Box>
             </Box>
           
             {/* Bell Icon with Real Unread Badge */}

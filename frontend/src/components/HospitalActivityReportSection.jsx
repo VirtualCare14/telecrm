@@ -17,6 +17,7 @@ import { useNavigate } from 'react-router-dom';
 import { useHospitalDetail } from '../context/HospitalDetailContext';
 import { getActivityHospitals, downloadActivityHospitalsExport } from '../services/dashboardService';
 import { getAgents } from '../services/agentService';
+import CalendarDatePicker from './CalendarDatePicker';
 
 function getTodayIST() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
@@ -288,15 +289,13 @@ export default function HospitalActivityReportSection({
               {/* Dynamic Date Controls based on Mode */}
               {dateMode === 'single' && (
                 <Stack direction="row" spacing={1} alignItems="center">
-                  <TextField
+                  <CalendarDatePicker
                     id="single-date-input"
-                    type="date"
                     size="small"
                     label="Select Date"
                     value={singleDate}
                     onChange={(e) => { setSingleDate(e.target.value); setPage(1); }}
-                    InputLabelProps={{ shrink: true }}
-                    sx={{ width: 155 }}
+                    sx={{ width: 165 }}
                   />
                   <Button
                     id="shortcut-today"
@@ -354,26 +353,22 @@ export default function HospitalActivityReportSection({
 
               {dateMode === 'custom' && (
                 <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
-                  <TextField
+                  <CalendarDatePicker
                     id="custom-start-date"
-                    type="date"
                     size="small"
                     label="Start Date"
                     value={customStartDate}
                     onChange={(e) => { setCustomStartDate(e.target.value); setPage(1); }}
-                    InputLabelProps={{ shrink: true }}
-                    sx={{ width: 150 }}
+                    sx={{ width: 165 }}
                   />
                   <Typography variant="body2" color="text.secondary">to</Typography>
-                  <TextField
+                  <CalendarDatePicker
                     id="custom-end-date"
-                    type="date"
                     size="small"
                     label="End Date"
                     value={customEndDate}
                     onChange={(e) => { setCustomEndDate(e.target.value); setPage(1); }}
-                    InputLabelProps={{ shrink: true }}
-                    sx={{ width: 150 }}
+                    sx={{ width: 165 }}
                   />
                 </Stack>
               )}

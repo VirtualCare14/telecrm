@@ -17,6 +17,7 @@ import { getAdminReports } from '../services/dashboardService';
 import { getAgents } from '../services/agentService';
 import DailyActivityReportSection from '../components/DailyActivityReportSection';
 import HospitalActivityReportSection from '../components/HospitalActivityReportSection';
+import CalendarDatePicker from '../components/CalendarDatePicker';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   formatDateToYYYYMMDD, getDailyRange, getWeeklyRange,
@@ -540,28 +541,24 @@ export default function AdminReports() {
           {reportType === 'custom' ? (
             <>
               <Grid item xs={6} sm={3} md={2.5}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="Start Date"
                   value={customStartDate}
                   onChange={(e) => setCustomStartDate(e.target.value)}
                   error={Boolean(customDateError)}
                   helperText={customDateError}
-                  InputLabelProps={{ shrink: true }}
                 />
               </Grid>
               <Grid item xs={6} sm={3} md={2.5}>
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label="End Date"
                   value={customEndDate}
                   onChange={(e) => setCustomEndDate(e.target.value)}
                   error={Boolean(customDateError)}
-                  InputLabelProps={{ shrink: true }}
                 />
               </Grid>
             </>
@@ -578,14 +575,12 @@ export default function AdminReports() {
                   InputLabelProps={{ shrink: true }}
                 />
               ) : (
-                <TextField
+                <CalendarDatePicker
                   fullWidth
                   size="small"
-                  type="date"
                   label={reportType === 'weekly' ? 'Select Week (Date)' : 'Select Date'}
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
                 />
               )}
             </Grid>

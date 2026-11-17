@@ -17,6 +17,7 @@ import { getDailyActivityReport, downloadDailyActivityExport } from '../services
 import { generateDailyActivityPdf } from '../utils/dailyReportPdf';
 import { getAgents } from '../services/agentService';
 import { useHospitalDetail } from '../context/HospitalDetailContext';
+import CalendarDatePicker from './CalendarDatePicker';
 
 // Calculate Yesterday in Asia/Kolkata timezone
 function getYesterdayIST() {
@@ -235,15 +236,13 @@ export default function DailyActivityReportSection({
           {/* Left: Date Selection, Role & Agent Filters, Shortcuts */}
           <Grid item xs={12} xl={7}>
             <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap" sx={{ gap: 1 }}>
-              <TextField
+              <CalendarDatePicker
                 id="daily-report-date-picker"
-                type="date"
                 size="small"
                 label="Report Date (IST)"
                 value={selectedDate}
                 onChange={(e) => handleDateChange(e.target.value)}
-                InputLabelProps={{ shrink: true }}
-                sx={{ width: 155 }}
+                sx={{ width: 165 }}
               />
 
               <Button

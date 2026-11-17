@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import {
   Drawer,
   Box,
@@ -68,6 +68,10 @@ import {
   PhotoCamera,
   Star,
   CheckCircleOutline,
+  DragIndicator,
+  RestartAlt,
+  ExpandMore,
+  ExpandLess,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -95,6 +99,7 @@ import {
   sendWhatsAppActivity,
 } from '../services/leadsService';
 import { getActiveAgents } from '../services/agentService';
+import CalendarDatePicker from './CalendarDatePicker';
 import {
   formatDateTime,
   formatDate,
@@ -105,6 +110,8 @@ import {
   combineDateAndTime,
   toLocalDatetimeInput,
   toISOFromLocalDatetime,
+  isOverdue,
+  isUpcoming,
 } from '../utils/dateHelpers';
 import {
   normalizeWhatsAppPhone,
@@ -150,6 +157,63 @@ const getDispositionStyle = (disposition) => {
   }
 };
 
+const DRAWER_STORAGE_KEY = 'telecrm:hospital-drawer-layout';
+
+const getDefaultDrawerLayout = () => {
+  const vpWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+  const vpHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+
+  if (vpWidth < 600) {
+    return {
+      x: 0,
+      y: 0,
+      width: vpWidth,
+      height: vpHeight,
+      isCustomized: false,
+    };
+  }
+
+  const defaultWidth = Math.min(Math.max(vpWidth * 0.58, 800), Math.min(vpWidth, 920));
+  return {
+    x: Math.max(0, vpWidth - defaultWidth),
+    y: 0,
+    width: defaultWidth,
+    height: vpHeight,
+    isCustomized: false,
+  };
+};
+
+const loadSavedDrawerLayout = () => {
+  try {
+    const raw = sessionStorage.getItem(DRAWER_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.width === 'number' && typeof parsed.height === 'number') {
+        const vpWidth = typeof window !== 'undefined' ? window.innerWidth : 1200;
+        const vpHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+        if (vpWidth < 600) {
+          return getDefaultDrawerLayout();
+        }
+        const minW = vpWidth < 960 ? 400 : 500;
+        const clampedW = Math.max(minW, Math.min(parsed.width, vpWidth));
+        const clampedH = Math.max(350, Math.min(parsed.height, vpHeight));
+        const clampedX = Math.max(0, Math.min(parsed.x, vpWidth - 100));
+        const clampedY = Math.max(0, Math.min(parsed.y, vpHeight - 60));
+        return {
+          x: clampedX,
+          y: clampedY,
+          width: clampedW,
+          height: clampedH,
+          isCustomized: parsed.isCustomized ?? true,
+        };
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
+  return getDefaultDrawerLayout();
+};
+
 export default function HospitalDetailDrawer({
   open,
   leadId,
@@ -159,6 +223,176 @@ export default function HospitalDetailDrawer({
 }) {
   const navigate = useNavigate();
   const currentUser = useAuthStore((s) => s.user);
+
+  // Draggable and Resizable layout state
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 600;
+  const [layout, setLayout] = useState(() => loadSavedDrawerLayout());
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(null); // 'w', 'e', 'n', 's', 'nw', 'ne', 'sw', 'se'
+  const dragStartRef = useRef(null);
+  const resizeStartRef = useRef(null);
+
+  // Window resize handler to keep drawer clamped inside viewport
+  useEffect(() => {
+    const handleWindowResize = () => {
+      setLayout((prev) => {
+        const vpWidth = window.innerWidth;
+        const vpHeight = window.innerHeight;
+        if (vpWidth < 600) {
+          return getDefaultDrawerLayout();
+        }
+        const minW = vpWidth < 960 ? 400 : 500;
+        const clampedW = Math.max(minW, Math.min(prev.width, vpWidth));
+        const clampedH = Math.max(350, Math.min(prev.height, vpHeight));
+        const clampedX = Math.max(0, Math.min(prev.x, vpWidth - 100));
+        const clampedY = Math.max(0, Math.min(prev.y, vpHeight - 60));
+        return {
+          ...prev,
+          x: clampedX,
+          y: clampedY,
+          width: clampedW,
+          height: clampedH,
+        };
+      });
+    };
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, []);
+
+  // Save customized layout to sessionStorage
+  useEffect(() => {
+    if (!isDragging && !isResizing && layout.isCustomized) {
+      try {
+        sessionStorage.setItem(DRAWER_STORAGE_KEY, JSON.stringify(layout));
+      } catch (e) {}
+    }
+  }, [layout, isDragging, isResizing]);
+
+  // Pointer drag and resize move & up listeners
+  useEffect(() => {
+    if (!isDragging && !isResizing) return;
+
+    const onPointerMove = (e) => {
+      if (isDragging && dragStartRef.current) {
+        const deltaX = e.clientX - dragStartRef.current.startX;
+        const deltaY = e.clientY - dragStartRef.current.startY;
+        const vpWidth = window.innerWidth;
+        const vpHeight = window.innerHeight;
+
+        const nextX = Math.max(0, Math.min(dragStartRef.current.initialX + deltaX, vpWidth - 100));
+        const nextY = Math.max(0, Math.min(dragStartRef.current.initialY + deltaY, vpHeight - 60));
+
+        setLayout((prev) => ({
+          ...prev,
+          x: nextX,
+          y: nextY,
+          isCustomized: true,
+        }));
+      } else if (isResizing && resizeStartRef.current) {
+        const { startX, startY, initialX, initialY, initialWidth, initialHeight, direction } = resizeStartRef.current;
+        const deltaX = e.clientX - startX;
+        const deltaY = e.clientY - startY;
+
+        const vpWidth = window.innerWidth;
+        const vpHeight = window.innerHeight;
+        const minW = vpWidth < 960 ? 400 : 500;
+        const minH = 350;
+
+        let nextWidth = initialWidth;
+        let nextHeight = initialHeight;
+        let nextX = initialX;
+        let nextY = initialY;
+
+        if (direction.includes('w')) {
+          const rawW = initialWidth - deltaX;
+          nextWidth = Math.max(minW, Math.min(rawW, initialX + initialWidth));
+          nextX = initialX + (initialWidth - nextWidth);
+        } else if (direction.includes('e')) {
+          const maxAllowedW = vpWidth - initialX;
+          nextWidth = Math.max(minW, Math.min(initialWidth + deltaX, maxAllowedW));
+        }
+
+        if (direction.includes('n')) {
+          const rawH = initialHeight - deltaY;
+          nextHeight = Math.max(minH, Math.min(rawH, initialY + initialHeight));
+          nextY = initialY + (initialHeight - nextHeight);
+        } else if (direction.includes('s')) {
+          const maxAllowedH = vpHeight - initialY;
+          nextHeight = Math.max(minH, Math.min(initialHeight + deltaY, maxAllowedH));
+        }
+
+        setLayout({
+          x: nextX,
+          y: nextY,
+          width: nextWidth,
+          height: nextHeight,
+          isCustomized: true,
+        });
+      }
+    };
+
+    const onPointerUp = () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      setIsDragging(false);
+      setIsResizing(null);
+      dragStartRef.current = null;
+      resizeStartRef.current = null;
+    };
+
+    document.body.style.userSelect = 'none';
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+
+    return () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+    };
+  }, [isDragging, isResizing]);
+
+  const handleDragPointerDown = (e) => {
+    if (isMobile) return;
+    if (e.button !== 0) return;
+
+    // Prevent drag when clicking interactive elements
+    const interactive = e.target.closest(
+      'button, a, input, select, textarea, [role="tab"], [role="button"], .MuiChip-root, .MuiIconButton-root, .MuiTabs-root, .no-drag'
+    );
+    if (interactive) return;
+
+    setIsDragging(true);
+    dragStartRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: layout.x,
+      initialY: layout.y,
+    };
+    e.preventDefault();
+  };
+
+  const handleResizeStart = (e, direction) => {
+    if (isMobile) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    setIsResizing(direction);
+    resizeStartRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialX: layout.x,
+      initialY: layout.y,
+      initialWidth: layout.width,
+      initialHeight: layout.height,
+      direction,
+    };
+  };
+
+  const handleResetLayout = () => {
+    sessionStorage.removeItem(DRAWER_STORAGE_KEY);
+    setLayout(getDefaultDrawerLayout());
+  };
 
   const isAdmin = Boolean(
     currentUser?.role?.toUpperCase() === 'ADMIN' ||
@@ -334,6 +568,7 @@ export default function HospitalDetailDrawer({
       setDemos([]);
       setWalkIns([]);
       setSalesFollowUps([]);
+      setExpandedRemarks({});
       setError(null);
     }
   }, [open, leadId, initialLead, fetchLeadDetails]);
@@ -365,8 +600,86 @@ export default function HospitalDetailDrawer({
     setTimeout(() => setCopiedPhone(false), 2000);
   };
 
+  // Call History Remarks expand/collapse state
+  const [expandedRemarks, setExpandedRemarks] = useState({});
+  const toggleExpandRemark = (id) => {
+    setExpandedRemarks((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  // Comprehensive chronological calling history / pipeline (newest call first)
+  const combinedCallHistory = useMemo(() => {
+    const map = new Map();
+
+    // 1. Process CallLog records (authoritative)
+    (callLogs || []).forEach((cl) => {
+      if (!cl) return;
+      const key = String(cl._id);
+      map.set(key, {
+        _id: cl._id,
+        calledAt: cl.calledAt || cl.createdAt,
+        disposition: cl.disposition || 'Call',
+        remark: cl.remark || '',
+        leadTemperature: cl.leadTemperature || null,
+        followUpAt: cl.followUpAt || null,
+        user: cl.user,
+        calledContact: cl.calledContact,
+        source: 'callLog',
+      });
+    });
+
+    // 2. Cross-reference LeadActivity records for any calls
+    (activities || []).forEach((act) => {
+      if (!act || !act.action?.includes('Call')) return;
+      const callLogId = act.metadata?.callLogId ? String(act.metadata.callLogId) : null;
+      if (callLogId && map.has(callLogId)) {
+        const existing = map.get(callLogId);
+        if (!existing.followUpAt && act.metadata?.followUpAt) {
+          existing.followUpAt = act.metadata.followUpAt;
+        }
+        if (!existing.leadTemperature && act.metadata?.leadTemperature) {
+          existing.leadTemperature = act.metadata.leadTemperature;
+        }
+      } else {
+        const idKey = callLogId || String(act._id);
+        if (!map.has(idKey)) {
+          map.set(idKey, {
+            _id: act._id,
+            calledAt: act.createdAt,
+            disposition:
+              act.metadata?.disposition ||
+              act.details?.match(/disposition "([^"]+)"/)?.[1] ||
+              'Call',
+            remark:
+              act.details?.match(/Remark: (.*)$/)?.[1] ||
+              act.details ||
+              '',
+            leadTemperature: act.metadata?.leadTemperature || null,
+            followUpAt: act.metadata?.followUpAt || null,
+            user: act.performedBy
+              ? {
+                  fullName:
+                    act.performedByName ||
+                    (typeof act.performedBy === 'object' ? act.performedBy.fullName : 'Agent'),
+                }
+              : null,
+            calledContact: null,
+            source: 'activity',
+          });
+        }
+      }
+    });
+
+    // Sort newest call first
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.calledAt || 0) - new Date(a.calledAt || 0)
+    );
+  }, [callLogs, activities]);
+
   // Notify parent of updates
   const notifyUpdated = (updatedLead) => {
+    if (updatedLead) {
+      setLead(updatedLead);
+    }
     if (onLeadUpdated) onLeadUpdated(updatedLead || currentLead);
     fetchLeadDetails(false);
   };
@@ -463,13 +776,13 @@ export default function HospitalDetailDrawer({
     if (!rescheduleDate) return;
     setSavingReschedule(true);
     try {
-      await rescheduleFollowUp(currentLead._id, {
+      const res = await rescheduleFollowUp(currentLead._id, {
         followUpDate: rescheduleDate,
         followUpTime: rescheduleTime || '10:00',
         remarks: rescheduleRemark,
       });
       setRescheduleDialogOpen(false);
-      notifyUpdated();
+      notifyUpdated(res?.lead);
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to reschedule follow-up');
     } finally {
@@ -481,8 +794,8 @@ export default function HospitalDetailDrawer({
   const handleCompleteFollowUp = async () => {
     if (!window.confirm('Mark this follow-up as completed?')) return;
     try {
-      await completeFollowUp(currentLead._id, { remark: 'Completed from hospital details' });
-      notifyUpdated();
+      const res = await completeFollowUp(currentLead._id, { remark: 'Completed from hospital details' });
+      notifyUpdated(res?.lead);
     } catch (err) {
       alert(err.response?.data?.message || 'Failed to complete follow-up');
     }
@@ -769,31 +1082,205 @@ export default function HospitalDetailDrawer({
         anchor="right"
         open={open}
         onClose={onClose}
-        PaperProps={{
-          sx: {
-            width: { xs: '100vw', sm: '92vw', md: 800, lg: 920 },
-            maxWidth: '100vw',
-            bgcolor: '#ffffff',
-            display: 'flex',
-            flexDirection: 'column',
-            boxShadow: '-8px 0 32px rgba(15, 23, 42, 0.16)',
+        sx={{
+          zIndex: 1400,
+          '& .MuiBackdrop-root': {
+            bgcolor: 'rgba(15, 23, 42, 0.35)',
           },
         }}
+        PaperProps={{
+          sx: isMobile
+            ? {
+                width: '100vw',
+                maxWidth: '100vw',
+                height: '100vh',
+                bgcolor: '#ffffff',
+                display: 'flex',
+                flexDirection: 'column',
+              }
+            : {
+                position: 'fixed',
+                top: layout.y,
+                left: layout.x,
+                width: layout.width,
+                height: layout.height,
+                right: 'auto',
+                bottom: 'auto',
+                maxWidth: '100vw',
+                maxHeight: '100vh',
+                bgcolor: '#ffffff',
+                display: 'flex',
+                flexDirection: 'column',
+                boxShadow: layout.isCustomized
+                  ? '0 24px 60px rgba(15, 23, 42, 0.32), 0 0 0 1px rgba(226, 232, 240, 0.9)'
+                  : '-8px 0 32px rgba(15, 23, 42, 0.16)',
+                borderRadius: layout.isCustomized ? 2.5 : 0,
+                overflow: 'hidden',
+                transition: isDragging || isResizing ? 'none' : 'box-shadow 0.2s ease, border-radius 0.2s ease',
+              },
+        }}
       >
-        {/* ===================== DRAWER HEADER ===================== */}
+        {/* ===================== 8-DIRECTION RESIZE HANDLES ===================== */}
+        {!isMobile && (
+          <>
+            {/* Left Edge (w) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'w')}
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: 8,
+                height: '100%',
+                cursor: 'ew-resize',
+                zIndex: 50,
+                transition: 'background-color 0.15s ease',
+                '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.25)' },
+              }}
+            />
+            {/* Right Edge (e) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'e')}
+              sx={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: 8,
+                height: '100%',
+                cursor: 'ew-resize',
+                zIndex: 50,
+                transition: 'background-color 0.15s ease',
+                '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.25)' },
+              }}
+            />
+            {/* Top Edge (n) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'n')}
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: 10,
+                right: 10,
+                height: 8,
+                cursor: 'ns-resize',
+                zIndex: 50,
+                transition: 'background-color 0.15s ease',
+                '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.25)' },
+              }}
+            />
+            {/* Bottom Edge (s) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 's')}
+              sx={{
+                position: 'absolute',
+                bottom: 0,
+                left: 10,
+                right: 10,
+                height: 8,
+                cursor: 'ns-resize',
+                zIndex: 50,
+                transition: 'background-color 0.15s ease',
+                '&:hover': { bgcolor: 'rgba(234, 88, 12, 0.25)' },
+              }}
+            />
+            {/* Top-Left Corner (nw) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'nw')}
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                width: 14,
+                height: 14,
+                cursor: 'nwse-resize',
+                zIndex: 51,
+                borderRadius: '4px 0 0 0',
+                '&:hover': { bgcolor: '#ea580c' },
+              }}
+            />
+            {/* Top-Right Corner (ne) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'ne')}
+              sx={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                width: 14,
+                height: 14,
+                cursor: 'nesw-resize',
+                zIndex: 51,
+                borderRadius: '0 4px 0 0',
+                '&:hover': { bgcolor: '#ea580c' },
+              }}
+            />
+            {/* Bottom-Left Corner (sw) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'sw')}
+              sx={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                width: 14,
+                height: 14,
+                cursor: 'nesw-resize',
+                zIndex: 51,
+                borderRadius: '0 0 0 4px',
+                '&:hover': { bgcolor: '#ea580c' },
+              }}
+            />
+            {/* Bottom-Right Corner (se) */}
+            <Box
+              onPointerDown={(e) => handleResizeStart(e, 'se')}
+              sx={{
+                position: 'absolute',
+                bottom: 0,
+                right: 0,
+                width: 14,
+                height: 14,
+                cursor: 'nwse-resize',
+                zIndex: 51,
+                borderRadius: '0 0 4px 0',
+                '&:hover': { bgcolor: '#ea580c' },
+              }}
+            />
+          </>
+        )}
+
+        {/* ===================== DRAWER HEADER (DRAG HANDLE) ===================== */}
         <Box
+          onPointerDown={handleDragPointerDown}
+          onDoubleClick={handleResetLayout}
           sx={{
-            p: { xs: 2, sm: 2.5 },
+            p: { xs: 2, sm: 2.25 },
             bgcolor: '#ffffff',
             borderBottom: '1px solid #e2e8f0',
             position: 'sticky',
             top: 0,
             zIndex: 10,
+            cursor: isMobile ? 'default' : isDragging ? 'grabbing' : 'grab',
+            userSelect: isDragging ? 'none' : 'auto',
           }}
         >
           <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1.5 }}>
-            {/* Left: Hospital Name & Badges */}
-            <Box sx={{ flex: 1, minWidth: 0 }}>
+            {/* Left: Drag Handle Indicator + Hospital Name & Badges */}
+            <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1, flex: 1, minWidth: 0 }}>
+              {!isMobile && (
+                <Tooltip title="Drag header to move panel anywhere in viewport (Double-click to reset position)">
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      pt: 0.25,
+                      color: isDragging ? '#ea580c' : '#94a3b8',
+                      cursor: isDragging ? 'grabbing' : 'grab',
+                      '&:hover': { color: '#ea580c' },
+                    }}
+                  >
+                    <DragIndicator sx={{ fontSize: 20 }} />
+                  </Box>
+                </Tooltip>
+              )}
+              <Box sx={{ flex: 1, minWidth: 0 }}>
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 0.5 }}>
                 <Typography
                   variant="h6"
@@ -939,6 +1426,7 @@ export default function HospitalDetailDrawer({
                 )}
               </Box>
             </Box>
+          </Box>
 
             {/* Right: Quick Action Controls */}
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
@@ -997,6 +1485,31 @@ export default function HospitalDetailDrawer({
                   <OpenInNew sx={{ fontSize: 18 }} />
                 </IconButton>
               </Tooltip>
+              {!isMobile && (
+                <Tooltip title={layout.isCustomized ? 'Reset Position & Size (Dock to Right)' : 'Default Right Docked'}>
+                  <span>
+                    <IconButton
+                      size="small"
+                      onClick={handleResetLayout}
+                      disabled={!layout.isCustomized}
+                      sx={{
+                        border: '1px solid',
+                        borderColor: layout.isCustomized ? 'rgba(234, 88, 12, 0.35)' : '#e2e8f0',
+                        borderRadius: 1.5,
+                        color: layout.isCustomized ? '#ea580c' : '#94a3b8',
+                        bgcolor: layout.isCustomized ? 'rgba(234, 88, 12, 0.08)' : 'transparent',
+                        '&:hover': {
+                          bgcolor: 'rgba(234, 88, 12, 0.15)',
+                          color: '#ea580c',
+                          borderColor: '#ea580c',
+                        },
+                      }}
+                    >
+                      <RestartAlt sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )}
               <IconButton size="small" onClick={onClose} sx={{ color: '#64748b' }}>
                 <Close sx={{ fontSize: 20 }} />
               </IconButton>
@@ -1029,7 +1542,7 @@ export default function HospitalDetailDrawer({
             }}
           >
             <Tab label="Overview & Profile" />
-            <Tab label={`Calls & Follow-ups (${callLogs.length})`} />
+            <Tab label={`Calls & Follow-ups (${combinedCallHistory.length})`} />
             <Tab label={`Demos & Walk-ins (${demos.length + walkIns.length})`} />
             <Tab label={`Timeline & Notes (${activities.length})`} />
           </Tabs>
@@ -1124,23 +1637,320 @@ export default function HospitalDetailDrawer({
 
                   {/* Grid of details */}
                   <Grid container spacing={2}>
-                    {/* 1. Contact Information Card */}
-                    <Grid item xs={12} md={6}>
+                    {/* ================= UPPER SECTION ================= */}
+                    {/* 1. Upper Left: Call History / Calling Pipeline */}
+                    <Grid item xs={12} md={6} lg={7}>
                       <Paper
                         elevation={0}
                         sx={{
                           p: 2,
                           height: '100%',
+                          display: 'flex',
+                          flexDirection: 'column',
                           borderRadius: 2.5,
                           border: '1px solid #e2e8f0',
                           bgcolor: '#ffffff',
                         }}
                       >
-                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}>
-                          <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#0f172a', display: 'flex', alignItems: 'center', gap: 1 }}>
-                            <Person sx={{ fontSize: 18, color: 'primary.main' }} />
-                            Contact Person(s)
-                          </Typography>
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#0f172a', display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <PhoneInTalk sx={{ fontSize: 18, color: 'primary.main' }} />
+                              Call History / Calling Pipeline
+                            </Typography>
+                            <Chip
+                              label={`${combinedCallHistory.length} ${combinedCallHistory.length === 1 ? 'Call' : 'Calls'}`}
+                              size="small"
+                              sx={{ height: 20, fontSize: 10, fontWeight: 700, bgcolor: 'rgba(234, 88, 12, 0.1)', color: 'primary.main' }}
+                            />
+                          </Box>
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={handleOpenCallDialog}
+                            startIcon={<PhoneInTalk sx={{ fontSize: 14 }} />}
+                            sx={{ textTransform: 'none', fontSize: 11, fontWeight: 600, py: 0.3, px: 1.25, borderRadius: 1.75 }}
+                          >
+                            Log Call
+                          </Button>
+                        </Box>
+
+                        {combinedCallHistory.length === 0 ? (
+                          <Box sx={{ p: 3, my: 'auto', textAlign: 'center', bgcolor: '#f8fafc', borderRadius: 2, border: '1px dashed #cbd5e1' }}>
+                            <PhoneInTalk sx={{ fontSize: 36, color: '#94a3b8', mb: 1 }} />
+                            <Typography variant="body2" fontWeight={600} sx={{ color: '#0f172a' }}>
+                              No Call History Yet
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mb: 1.5 }}>
+                              No calls have been logged for this hospital lead.
+                            </Typography>
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              startIcon={<PhoneInTalk sx={{ fontSize: 14 }} />}
+                              onClick={handleOpenCallDialog}
+                              sx={{ textTransform: 'none', borderRadius: 2, fontWeight: 600, fontSize: 11 }}
+                            >
+                              Log First Call
+                            </Button>
+                          </Box>
+                        ) : (
+                          <Box sx={{ flex: 1, maxHeight: 520, overflowY: 'auto', pr: 0.5 }}>
+                            <Stack spacing={1.5}>
+                              {combinedCallHistory.map((call, index) => {
+                                const callNumber = combinedCallHistory.length - index;
+                                const style = getDispositionStyle(call.disposition);
+                                const contactObj =
+                                  call.calledContact && typeof call.calledContact === 'object'
+                                    ? call.calledContact
+                                    : (contacts.find((c) => c._id === (call.calledContact?._id || call.calledContact)) || null);
+                                const contactPersonName =
+                                  contactObj?.name ||
+                                  call.calledContactName ||
+                                  currentLead?.primaryContact?.name ||
+                                  currentLead?.contactName ||
+                                  'Primary Contact';
+                                const contactPersonPhone =
+                                  contactObj?.phone ||
+                                  call.calledContactPhone ||
+                                  currentLead?.primaryContact?.phone ||
+                                  currentLead?.phone ||
+                                  '';
+                                const contactPersonDesig =
+                                  contactObj?.designation ||
+                                  currentLead?.primaryContact?.designation ||
+                                  '';
+                                const callerAgentName =
+                                  call.user?.fullName ||
+                                  call.user?.username ||
+                                  call.performedByName ||
+                                  'Agent';
+                                const isExpanded = Boolean(expandedRemarks[call._id || index]);
+                                const remarksText = call.remark || call.details || '';
+                                const isLongRemark = remarksText.length > 120;
+
+                                const hasFollowUp = Boolean(call.followUpAt);
+                                const followUpOverdue = hasFollowUp && isOverdue(call.followUpAt, currentLead?.closureStatus);
+                                const followUpUpcoming = hasFollowUp && isUpcoming(call.followUpAt, currentLead?.closureStatus);
+
+                                return (
+                                  <Paper
+                                    key={call._id || index}
+                                    elevation={0}
+                                    sx={{
+                                      p: 1.75,
+                                      borderRadius: 2,
+                                      border: '1px solid #e2e8f0',
+                                      borderLeft: `4px solid ${style.color || '#0284c7'}`,
+                                      bgcolor: '#ffffff',
+                                      transition: 'all 0.2s ease',
+                                      '&:hover': {
+                                        boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                                        borderColor: '#cbd5e1',
+                                      },
+                                    }}
+                                  >
+                                    {/* Call Header */}
+                                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 1, mb: 1 }}>
+                                      <Typography variant="body2" fontWeight={700} sx={{ color: '#0f172a' }}>
+                                        Call #{callNumber} — {formatDate(call.calledAt)}, {formatTime(call.calledAt)}
+                                      </Typography>
+                                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                        <Chip
+                                          label={call.disposition || 'Call'}
+                                          size="small"
+                                          sx={{
+                                            bgcolor: style.bg,
+                                            color: style.color,
+                                            border: `1px solid ${style.border}`,
+                                            fontWeight: 700,
+                                            fontSize: 10.5,
+                                            height: 22,
+                                          }}
+                                        />
+                                        {call.leadTemperature && (
+                                          <Chip
+                                            label={call.leadTemperature}
+                                            size="small"
+                                            sx={{
+                                              height: 20,
+                                              fontSize: 10,
+                                              fontWeight: 700,
+                                              bgcolor:
+                                                call.leadTemperature === 'Hot'
+                                                  ? 'rgba(239, 68, 68, 0.1)'
+                                                  : call.leadTemperature === 'Warm'
+                                                  ? 'rgba(245, 158, 11, 0.1)'
+                                                  : 'rgba(2, 132, 199, 0.1)',
+                                              color:
+                                                call.leadTemperature === 'Hot'
+                                                  ? '#dc2626'
+                                                  : call.leadTemperature === 'Warm'
+                                                  ? '#d97706'
+                                                  : '#0284c7',
+                                              border:
+                                                call.leadTemperature === 'Hot'
+                                                  ? '1px solid #fecaca'
+                                                  : call.leadTemperature === 'Warm'
+                                                  ? '1px solid #fde68a'
+                                                  : '1px solid #bae6fd',
+                                            }}
+                                          />
+                                        )}
+                                      </Box>
+                                    </Box>
+
+                                    {/* Call Details: Called Person, Phone, Caller Agent */}
+                                    <Box
+                                      sx={{
+                                        display: 'grid',
+                                        gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' },
+                                        gap: 0.75,
+                                        mb: 1,
+                                        bgcolor: '#f8fafc',
+                                        p: 1.25,
+                                        borderRadius: 1.5,
+                                        border: '1px solid #f1f5f9',
+                                      }}
+                                    >
+                                      <Box>
+                                        <Typography variant="caption" sx={{ color: '#64748b', display: 'block', fontSize: 10.5 }}>
+                                          Called Person
+                                        </Typography>
+                                        <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a' }}>
+                                          {contactPersonName} {contactPersonDesig ? `(${contactPersonDesig})` : ''}
+                                        </Typography>
+                                      </Box>
+
+                                      <Box>
+                                        <Typography variant="caption" sx={{ color: '#64748b', display: 'block', fontSize: 10.5 }}>
+                                          Contact Phone
+                                        </Typography>
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                          <Typography variant="caption" fontWeight={600} sx={{ color: '#0f172a' }}>
+                                            {contactPersonPhone || '—'}
+                                          </Typography>
+                                          {contactPersonPhone && (
+                                            <Tooltip title="Call">
+                                              <IconButton
+                                                component="a"
+                                                href={`tel:${contactPersonPhone}`}
+                                                size="small"
+                                                sx={{ p: 0.2, color: '#0284c7' }}
+                                              >
+                                                <PhoneInTalk sx={{ fontSize: 12 }} />
+                                              </IconButton>
+                                            </Tooltip>
+                                          )}
+                                        </Box>
+                                      </Box>
+
+                                      <Box sx={{ gridColumn: { xs: '1', sm: 'span 2' } }}>
+                                        <Typography variant="caption" sx={{ color: '#64748b', fontSize: 10.5 }}>
+                                          Called By: <strong>{callerAgentName}</strong>
+                                        </Typography>
+                                      </Box>
+                                    </Box>
+
+                                    {/* Remarks / Conversation Notes */}
+                                    <Box sx={{ bgcolor: '#ffffff', p: 1.25, borderRadius: 1.5, border: '1px dashed #cbd5e1', mb: hasFollowUp ? 1 : 0 }}>
+                                      <Typography variant="caption" sx={{ color: '#64748b', fontWeight: 600, display: 'block', mb: 0.25 }}>
+                                        Remarks / Notes:
+                                      </Typography>
+                                      <Typography variant="caption" sx={{ color: '#334155', display: 'block', lineHeight: 1.45, whiteSpace: 'pre-wrap' }}>
+                                        {remarksText
+                                          ? isLongRemark && !isExpanded
+                                            ? `${remarksText.slice(0, 120)}...`
+                                          : remarksText
+                                          : 'No conversation remarks recorded.'}
+                                      </Typography>
+                                      {isLongRemark && (
+                                        <Button
+                                          size="small"
+                                          onClick={() => toggleExpandRemark(call._id || index)}
+                                          endIcon={isExpanded ? <ExpandLess sx={{ fontSize: 14 }} /> : <ExpandMore sx={{ fontSize: 14 }} />}
+                                          sx={{ textTransform: 'none', fontSize: 10.5, p: 0, minWidth: 0, mt: 0.25, fontWeight: 600 }}
+                                        >
+                                          {isExpanded ? 'Show less' : 'Read full remarks'}
+                                        </Button>
+                                      )}
+                                    </Box>
+
+                                    {/* Next Follow-up Section if scheduled */}
+                                    {hasFollowUp && (
+                                      <Box
+                                        sx={{
+                                          display: 'flex',
+                                          alignItems: 'center',
+                                          justifyContent: 'space-between',
+                                          flexWrap: 'wrap',
+                                          gap: 1,
+                                          p: 1,
+                                          borderRadius: 1.5,
+                                          bgcolor: followUpOverdue ? 'rgba(239, 68, 68, 0.05)' : 'rgba(2, 132, 199, 0.05)',
+                                          border: `1px solid ${followUpOverdue ? '#fecaca' : '#bae6fd'}`,
+                                        }}
+                                      >
+                                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+                                          <Schedule sx={{ fontSize: 14, color: followUpOverdue ? '#dc2626' : '#0284c7' }} />
+                                          <Typography variant="caption" sx={{ color: followUpOverdue ? '#dc2626' : '#0284c7', fontWeight: 600 }}>
+                                            Next Follow-up: <strong>{formatDate(call.followUpAt)}, {formatTime(call.followUpAt)}</strong>
+                                          </Typography>
+                                        </Box>
+                                        <Chip
+                                          label={
+                                            followUpOverdue
+                                              ? 'Overdue Follow-up'
+                                              : followUpUpcoming
+                                              ? 'Scheduled Follow-up'
+                                              : 'Past Follow-up'
+                                          }
+                                          size="small"
+                                          sx={{
+                                            height: 18,
+                                            fontSize: 9.5,
+                                            fontWeight: 700,
+                                            bgcolor: followUpOverdue ? '#dc2626' : followUpUpcoming ? '#0284c7' : '#64748b',
+                                            color: '#ffffff',
+                                          }}
+                                        />
+                                      </Box>
+                                    )}
+                                  </Paper>
+                                );
+                              })}
+                            </Stack>
+                          </Box>
+                        )}
+                      </Paper>
+                    </Grid>
+
+                    {/* 2. Upper Right: Contact Information */}
+                    <Grid item xs={12} md={6} lg={5}>
+                      <Paper
+                        elevation={0}
+                        sx={{
+                          p: 2,
+                          height: '100%',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          borderRadius: 2.5,
+                          border: '1px solid #e2e8f0',
+                          bgcolor: '#ffffff',
+                        }}
+                      >
+                        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5, flexWrap: 'wrap', gap: 1 }}>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                            <Typography variant="subtitle2" fontWeight={700} sx={{ color: '#0f172a', display: 'flex', alignItems: 'center', gap: 1 }}>
+                              <Person sx={{ fontSize: 18, color: 'primary.main' }} />
+                              Contact Person(s)
+                            </Typography>
+                            <Chip
+                              label={contacts.length || (primaryContact ? 1 : 0)}
+                              size="small"
+                              sx={{ height: 20, fontSize: 10, fontWeight: 700, bgcolor: 'rgba(2, 132, 199, 0.1)', color: '#0284c7' }}
+                            />
+                          </Box>
                           <Button
                             size="small"
                             onClick={handleOpenContactDialog}
@@ -1151,69 +1961,118 @@ export default function HospitalDetailDrawer({
                           </Button>
                         </Box>
 
-                        <Stack spacing={1.25}>
-                          <Box sx={{ bgcolor: '#f8fafc', p: 1.25, borderRadius: 2, border: '1px solid #f1f5f9' }}>
-                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                              <Typography variant="body2" fontWeight={700} sx={{ color: '#0f172a' }}>
-                                {contactName}
-                              </Typography>
-                              <Chip label="Primary" size="small" color="primary" sx={{ height: 18, fontSize: 10, fontWeight: 700 }} />
-                            </Box>
-                            {contactDesignation && (
-                              <Typography variant="caption" sx={{ color: '#64748b', display: 'block' }}>
-                                {contactDesignation}
-                              </Typography>
-                            )}
-                            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.75 }}>
-                              <Typography variant="body2" sx={{ color: '#0f172a', fontWeight: 600 }}>
-                                {contactPhone || 'No phone number'}
-                              </Typography>
-                              {contactPhone && (
-                                <Tooltip title={copiedPhone ? 'Copied!' : 'Copy phone'}>
-                                  <IconButton size="small" onClick={handleCopyPhone} sx={{ p: 0.25 }}>
-                                    {copiedPhone ? <CheckIcon sx={{ fontSize: 12, color: '#10b981' }} /> : <ContentCopy sx={{ fontSize: 12 }} />}
-                                  </IconButton>
-                                </Tooltip>
+                        <Box sx={{ flex: 1, maxHeight: 520, overflowY: 'auto', pr: 0.5 }}>
+                          <Stack spacing={1.25}>
+                            {/* Primary Contact Card */}
+                            <Box sx={{ bgcolor: '#f8fafc', p: 1.5, borderRadius: 2, border: '1px solid #e2e8f0' }}>
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <Typography variant="body2" fontWeight={700} sx={{ color: '#0f172a' }}>
+                                  {contactName}
+                                </Typography>
+                                <Chip label="Primary Contact" size="small" color="primary" sx={{ height: 18, fontSize: 10, fontWeight: 700 }} />
+                              </Box>
+                              {contactDesignation && (
+                                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.25 }}>
+                                  {contactDesignation}
+                                </Typography>
+                              )}
+                              <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 1 }}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                                  <Typography variant="body2" sx={{ color: '#0f172a', fontWeight: 600 }}>
+                                    {contactPhone || 'No phone number'}
+                                  </Typography>
+                                  {contactPhone && (
+                                    <Tooltip title={copiedPhone ? 'Copied!' : 'Copy phone'}>
+                                      <IconButton size="small" onClick={handleCopyPhone} sx={{ p: 0.25 }}>
+                                        {copiedPhone ? <CheckIcon sx={{ fontSize: 12, color: '#10b981' }} /> : <ContentCopy sx={{ fontSize: 12 }} />}
+                                      </IconButton>
+                                    </Tooltip>
+                                  )}
+                                </Box>
+                                {contactPhone && (
+                                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
+                                    <Tooltip title="Call">
+                                      <IconButton
+                                        component="a"
+                                        href={`tel:${contactPhone}`}
+                                        size="small"
+                                        sx={{ p: 0.5, bgcolor: 'rgba(2, 132, 199, 0.1)', color: '#0284c7' }}
+                                      >
+                                        <PhoneInTalk sx={{ fontSize: 14 }} />
+                                      </IconButton>
+                                    </Tooltip>
+                                    <Tooltip title="Send WhatsApp">
+                                      <IconButton
+                                        size="small"
+                                        onClick={handleOpenWhatsAppDialog}
+                                        sx={{ p: 0.5, bgcolor: 'rgba(37, 211, 102, 0.1)', color: '#16a34a' }}
+                                      >
+                                        <WhatsAppIcon sx={{ fontSize: 14 }} />
+                                      </IconButton>
+                                    </Tooltip>
+                                  </Box>
+                                )}
+                              </Box>
+                              {primaryContact?.email && (
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.75 }}>
+                                  <Email sx={{ fontSize: 13, color: '#64748b' }} />
+                                  <Typography
+                                    component="a"
+                                    href={`mailto:${primaryContact.email}`}
+                                    variant="caption"
+                                    sx={{ color: 'primary.main', textDecoration: 'none' }}
+                                  >
+                                    {primaryContact.email}
+                                  </Typography>
+                                </Box>
+                              )}
+                              {primaryContact?.altPhone && (
+                                <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.5 }}>
+                                  Alt Phone: <strong>{primaryContact.altPhone}</strong>
+                                </Typography>
                               )}
                             </Box>
-                            {primaryContact?.email && (
-                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.5 }}>
-                                <Email sx={{ fontSize: 13, color: '#64748b' }} />
-                                <Typography
-                                  component="a"
-                                  href={`mailto:${primaryContact.email}`}
-                                  variant="caption"
-                                  sx={{ color: 'primary.main', textDecoration: 'none' }}
-                                >
-                                  {primaryContact.email}
-                                </Typography>
-                              </Box>
-                            )}
-                            {primaryContact?.altPhone && (
-                              <Typography variant="caption" sx={{ color: '#64748b', display: 'block', mt: 0.5 }}>
-                                Alt: {primaryContact.altPhone}
-                              </Typography>
-                            )}
-                          </Box>
 
-                          {/* Secondary Contacts */}
-                          {contacts
-                            .filter((c) => !c.isPrimary && c._id !== primaryContact?._id)
-                            .map((c) => (
-                              <Box key={c._id} sx={{ p: 1, borderRadius: 1.5, border: '1px solid #f1f5f9', bgcolor: '#ffffff' }}>
-                                <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a' }}>
-                                  {c.name} {c.designation ? `(${c.designation})` : ''}
-                                </Typography>
-                                <Typography variant="caption" sx={{ display: 'block', color: '#475569' }}>
-                                  📞 {c.phone} {c.email ? `• ✉️ ${c.email}` : ''}
-                                </Typography>
-                              </Box>
-                            ))}
-                        </Stack>
+                            {/* Secondary Contacts */}
+                            {contacts
+                              .filter((c) => !c.isPrimary && c._id !== primaryContact?._id)
+                              .map((c) => (
+                                <Box key={c._id} sx={{ p: 1.25, borderRadius: 1.75, border: '1px solid #f1f5f9', bgcolor: '#ffffff', '&:hover': { bgcolor: '#f8fafc' } }}>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <Typography variant="caption" fontWeight={700} sx={{ color: '#0f172a' }}>
+                                      {c.name} {c.designation ? `(${c.designation})` : ''}
+                                    </Typography>
+                                    <Chip label="Contact" size="small" sx={{ height: 16, fontSize: 9, fontWeight: 600 }} />
+                                  </Box>
+                                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mt: 0.5 }}>
+                                    <Typography variant="caption" sx={{ color: '#334155', fontWeight: 600 }}>
+                                      📞 {c.phone}
+                                    </Typography>
+                                    {c.phone && (
+                                      <Tooltip title="Call">
+                                        <IconButton component="a" href={`tel:${c.phone}`} size="small" sx={{ p: 0.2, color: '#0284c7' }}>
+                                          <PhoneInTalk sx={{ fontSize: 12 }} />
+                                        </IconButton>
+                                      </Tooltip>
+                                    )}
+                                  </Box>
+                                  {c.email && (
+                                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mt: 0.25 }}>
+                                      <Email sx={{ fontSize: 11, color: '#64748b' }} />
+                                      <Typography component="a" href={`mailto:${c.email}`} variant="caption" sx={{ color: 'primary.main', textDecoration: 'none', fontSize: 11 }}>
+                                        {c.email}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                </Box>
+                              ))}
+                          </Stack>
+                        </Box>
                       </Paper>
                     </Grid>
 
-                    {/* 2. Hospital & Location Card */}
+                    {/* ================= LOWER SECTION ================= */}
+                    {/* 3. Hospital & Location Card */}
                     <Grid item xs={12} md={6}>
                       <Paper
                         elevation={0}
@@ -1299,7 +2158,7 @@ export default function HospitalDetailDrawer({
                       </Paper>
                     </Grid>
 
-                    {/* 3. CRM Assignment & Ownership Card */}
+                    {/* 4. CRM Assignment & Ownership Card */}
                     <Grid item xs={12} md={6}>
                       <Paper
                         elevation={0}
@@ -1353,7 +2212,7 @@ export default function HospitalDetailDrawer({
                             <Box>
                               <Typography variant="caption" sx={{ color: '#64748b' }}>Source Remarks</Typography>
                               <Typography variant="caption" sx={{ display: 'block', color: '#334155', fontStyle: 'italic' }}>
-                                "{currentLead.sourceRemarks}"
+                                "${currentLead.sourceRemarks}"
                               </Typography>
                             </Box>
                           )}
@@ -1379,13 +2238,12 @@ export default function HospitalDetailDrawer({
                       </Paper>
                     </Grid>
 
-                    {/* 4. Commercial, Software & Outcome Card */}
-                    <Grid item xs={12} md={6}>
+                    {/* 5. Commercial, Software & Outcome Card */}
+                    <Grid item xs={12}>
                       <Paper
                         elevation={0}
                         sx={{
                           p: 2,
-                          height: '100%',
                           borderRadius: 2.5,
                           border: '1px solid #e2e8f0',
                           bgcolor: '#ffffff',
@@ -1426,78 +2284,84 @@ export default function HospitalDetailDrawer({
                           )}
                         </Box>
 
-                        <Stack spacing={1.25}>
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <Typography variant="caption" sx={{ color: '#64748b' }}>Lead Status</Typography>
-                            <Chip
-                              label={currentLead?.closureStatus || 'OPEN'}
-                              size="small"
-                              color={
-                                currentLead?.closureStatus === 'WON'
-                                  ? 'success'
-                                  : currentLead?.closureStatus === 'LOST'
-                                  ? 'error'
-                                  : 'primary'
-                              }
-                              sx={{ height: 20, fontSize: 10, fontWeight: 700 }}
-                            />
-                          </Box>
-
-                          {currentLead?.closureStatus === 'WON' && (
-                            <>
+                        <Grid container spacing={2}>
+                          <Grid item xs={12} sm={6}>
+                            <Stack spacing={1.25}>
                               <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                                <Typography variant="caption" sx={{ color: '#64748b' }}>Deal Value</Typography>
-                                <Typography variant="body2" fontWeight={700} sx={{ color: '#059669' }}>
-                                  ₹{Number(currentLead.dealValue || 0).toLocaleString('en-IN')}
-                                </Typography>
+                                <Typography variant="caption" sx={{ color: '#64748b' }}>Lead Status</Typography>
+                                <Chip
+                                  label={currentLead?.closureStatus || 'OPEN'}
+                                  size="small"
+                                  color={
+                                    currentLead?.closureStatus === 'WON'
+                                      ? 'success'
+                                      : currentLead?.closureStatus === 'LOST'
+                                      ? 'error'
+                                      : 'primary'
+                                  }
+                                  sx={{ height: 20, fontSize: 10, fontWeight: 700 }}
+                                />
                               </Box>
-                              {currentLead.product && (
+
+                              {currentLead?.closureStatus === 'WON' && (
+                                <>
+                                  <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                                    <Typography variant="caption" sx={{ color: '#64748b' }}>Deal Value</Typography>
+                                    <Typography variant="body2" fontWeight={700} sx={{ color: '#059669' }}>
+                                      ₹{Number(currentLead.dealValue || 0).toLocaleString('en-IN')}
+                                    </Typography>
+                                  </Box>
+                                  {currentLead.product && (
+                                    <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                                      <Typography variant="caption" sx={{ color: '#64748b' }}>Product</Typography>
+                                      <Typography variant="caption" fontWeight={600} sx={{ color: '#0f172a' }}>
+                                        {currentLead.product}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                </>
+                              )}
+
+                              {currentLead?.closureStatus === 'LOST' && currentLead.lostReason && (
                                 <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                                  <Typography variant="caption" sx={{ color: '#64748b' }}>Product</Typography>
-                                  <Typography variant="caption" fontWeight={600} sx={{ color: '#0f172a' }}>
-                                    {currentLead.product}
+                                  <Typography variant="caption" sx={{ color: '#64748b' }}>Lost Reason</Typography>
+                                  <Typography variant="caption" fontWeight={700} sx={{ color: '#dc2626' }}>
+                                    {currentLead.lostReason}
                                   </Typography>
                                 </Box>
                               )}
-                            </>
-                          )}
 
-                          {currentLead?.closureStatus === 'LOST' && currentLead.lostReason && (
-                            <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                              <Typography variant="caption" sx={{ color: '#64748b' }}>Lost Reason</Typography>
-                              <Typography variant="caption" fontWeight={700} sx={{ color: '#dc2626' }}>
-                                {currentLead.lostReason}
-                              </Typography>
-                            </Box>
-                          )}
+                              {currentLead?.closingRemark && (
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: '#64748b' }}>Closure Remark</Typography>
+                                  <Typography variant="caption" sx={{ display: 'block', color: '#475569', fontStyle: 'italic' }}>
+                                    "${currentLead.closingRemark}"
+                                  </Typography>
+                                </Box>
+                              )}
+                            </Stack>
+                          </Grid>
 
-                          {currentLead?.closingRemark && (
-                            <Box>
-                              <Typography variant="caption" sx={{ color: '#64748b' }}>Closure Remark</Typography>
-                              <Typography variant="caption" sx={{ display: 'block', color: '#475569', fontStyle: 'italic' }}>
-                                "{currentLead.closingRemark}"
-                              </Typography>
-                            </Box>
-                          )}
+                          <Grid item xs={12} sm={6}>
+                            <Stack spacing={1.25}>
+                              <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
+                                <Typography variant="caption" sx={{ color: '#64748b' }}>Software Currently Used</Typography>
+                                <Typography variant="caption" fontWeight={600} sx={{ color: '#0f172a' }}>
+                                  {currentLead?.existingSoftwareUsed || 'Unknown'} {currentLead?.softwareName ? `(${currentLead.softwareName})` : ''}
+                                </Typography>
+                              </Box>
 
-                          <Divider sx={{ my: 0.5 }} />
-
-                          <Box sx={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <Typography variant="caption" sx={{ color: '#64748b' }}>Software Currently Used</Typography>
-                            <Typography variant="caption" fontWeight={600} sx={{ color: '#0f172a' }}>
-                              {currentLead?.existingSoftwareUsed || 'Unknown'} {currentLead?.softwareName ? `(${currentLead.softwareName})` : ''}
-                            </Typography>
-                          </Box>
-
-                          {currentLead?.remarks && (
-                            <Box>
-                              <Typography variant="caption" sx={{ color: '#64748b' }}>Initial Remarks</Typography>
-                              <Typography variant="caption" sx={{ display: 'block', color: '#334155' }}>
-                                {currentLead.remarks}
-                              </Typography>
-                            </Box>
-                          )}
-                        </Stack>
+                              {currentLead?.remarks && (
+                                <Box>
+                                  <Typography variant="caption" sx={{ color: '#64748b' }}>Initial Remarks</Typography>
+                                  <Typography variant="caption" sx={{ display: 'block', color: '#334155' }}>
+                                    {currentLead.remarks}
+                                  </Typography>
+                                </Box>
+                              )}
+                            </Stack>
+                          </Grid>
+                        </Grid>
                       </Paper>
                     </Grid>
                   </Grid>
@@ -1522,7 +2386,7 @@ export default function HospitalDetailDrawer({
                     </Button>
                   </Box>
 
-                  {callLogs.length === 0 ? (
+                  {combinedCallHistory.length === 0 ? (
                     <Paper elevation={0} sx={{ p: 4, textAlign: 'center', borderRadius: 2.5, bgcolor: '#ffffff', border: '1px solid #e2e8f0' }}>
                       <PhoneInTalk sx={{ fontSize: 40, color: '#94a3b8', mb: 1 }} />
                       <Typography variant="body1" fontWeight={600} sx={{ color: '#0f172a' }}>
@@ -1537,7 +2401,7 @@ export default function HospitalDetailDrawer({
                     </Paper>
                   ) : (
                     <Stack spacing={1.5}>
-                      {callLogs.map((log) => {
+                      {combinedCallHistory.map((log) => {
                         const style = getDispositionStyle(log.disposition);
                         return (
                           <Paper
@@ -2092,15 +2956,13 @@ export default function HospitalDetailDrawer({
 
             {/* Row 1: Left = Call Date, Right = Call Time */}
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 required
                 size="small"
                 label="Call Date *"
-                type="date"
                 value={callData.callDate}
                 onChange={(e) => setCallData((p) => ({ ...p, callDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
             </Grid>
@@ -2215,15 +3077,13 @@ export default function HospitalDetailDrawer({
 
             {/* Row 4: Next Follow-up Date & Next Follow-up Time */}
             <Grid item xs={12} sm={6}>
-              <TextField
+              <CalendarDatePicker
                 fullWidth
                 size="small"
                 label="Next Follow-up Date"
-                type="date"
                 value={callData.followUpDate}
                 onChange={(e) => setCallData((p) => ({ ...p, followUpDate: e.target.value }))}
-                InputLabelProps={{ shrink: true }}
-                inputProps={{ min: formatDateToYYYYMMDD(new Date()) }}
+                min={formatDateToYYYYMMDD(new Date())}
                 helperText="Schedule next follow-up date"
                 sx={{ '& .MuiOutlinedInput-root': { borderRadius: 2 } }}
               />
@@ -2280,12 +3140,10 @@ export default function HospitalDetailDrawer({
           <Stack spacing={2} sx={{ pt: 1 }}>
             <Grid container spacing={2}>
               <Grid item xs={6}>
-                <TextField
+                <CalendarDatePicker
                   label="Follow-up Date"
-                  type="date"
                   size="small"
                   fullWidth
-                  InputLabelProps={{ shrink: true }}
                   value={rescheduleDate}
                   onChange={(e) => setRescheduleDate(e.target.value)}
                 />
@@ -2347,12 +3205,10 @@ export default function HospitalDetailDrawer({
 
             <Grid container spacing={2}>
               <Grid item xs={6}>
-                <TextField
+                <CalendarDatePicker
                   label="Demo Date"
-                  type="date"
                   size="small"
                   fullWidth
-                  InputLabelProps={{ shrink: true }}
                   value={demoDate}
                   onChange={(e) => setDemoDate(e.target.value)}
                 />
@@ -2424,12 +3280,10 @@ export default function HospitalDetailDrawer({
 
             <Grid container spacing={2}>
               <Grid item xs={6}>
-                <TextField
+                <CalendarDatePicker
                   label="Walk-in Date"
-                  type="date"
                   size="small"
                   fullWidth
-                  InputLabelProps={{ shrink: true }}
                   value={walkInDate}
                   onChange={(e) => setWalkInDate(e.target.value)}
                 />

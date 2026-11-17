@@ -32,9 +32,55 @@ export function splitDateAnd24HTime(dateOrIso) {
   };
 }
 
+export function normalizeDateToYYYYMMDD(val) {
+  if (!val) return '';
+  if (typeof val === 'string') {
+    const s = val.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+      const parts = s.split('/');
+      const m = parts[0].padStart(2, '0');
+      const d = parts[1].padStart(2, '0');
+      const y = parts[2];
+      return `${y}-${m}-${d}`;
+    }
+  }
+  const d = new Date(val);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+
+export function formatYYYYMMDDToMMDDYYYY(ymd) {
+  if (!ymd) return '';
+  const clean = normalizeDateToYYYYMMDD(ymd);
+  if (!clean) return '';
+  const [y, m, d] = clean.split('-');
+  return `${m}/${d}/${y}`;
+}
+
+export function parseMMDDYYYYToYYYYMMDD(mmddyyyy) {
+  if (!mmddyyyy) return '';
+  const s = String(mmddyyyy).trim();
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+    const parts = s.split('/');
+    const m = parts[0].padStart(2, '0');
+    const d = parts[1].padStart(2, '0');
+    const y = parts[2];
+    return `${y}-${m}-${d}`;
+  }
+  return normalizeDateToYYYYMMDD(s);
+}
+
 export function combineDateAndTime(dateStr, timeStr) {
   if (!dateStr || typeof dateStr !== 'string' || !dateStr.trim()) return undefined;
-  const cleanDate = dateStr.trim();
+  let cleanDate = dateStr.trim();
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(cleanDate)) {
+    const parts = cleanDate.split('/');
+    const m = parts[0].padStart(2, '0');
+    const d = parts[1].padStart(2, '0');
+    const y = parts[2];
+    cleanDate = `${y}-${m}-${d}`;
+  }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
     const d = new Date(cleanDate);
     return isNaN(d.getTime()) ? undefined : d.toISOString();
@@ -87,31 +133,18 @@ export function getDateRangeFromFilter(filter, extra = {}) {
     case 'today':
       return { startDate: todayStr, endDate: todayStr };
     case 'yesterday': {
-      const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
-      const yesterdayStr = formatDateToYYYYMMDD(yesterday);
+      const [y, m, d] = todayStr.split('-').map(Number);
+      const prev = new Date(Date.UTC(y, m - 1, d - 1));
+      const py = prev.getUTCFullYear();
+      const pm = String(prev.getUTCMonth() + 1).padStart(2, '0');
+      const pd = String(prev.getUTCDate()).padStart(2, '0');
+      const yesterdayStr = `${py}-${pm}-${pd}`;
       return { startDate: yesterdayStr, endDate: yesterdayStr };
     }
-    case 'last7': {
-      const last7 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6);
-      return { startDate: formatDateToYYYYMMDD(last7), endDate: todayStr };
-    }
-    case 'last30': {
-      const last30 = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 29);
-      return { startDate: formatDateToYYYYMMDD(last30), endDate: todayStr };
-    }
     case 'thisMonth': {
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      return { startDate: formatDateToYYYYMMDD(monthStart), endDate: todayStr };
-    }
-    case 'single': {
-      const d = extra.singleDate || todayStr;
-      return { startDate: d, endDate: d };
-    }
-    case 'month': {
-      const m = extra.selectedMonth || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      const [year, mon] = m.split('-').map(Number);
-      const lastDay = new Date(Date.UTC(year, mon, 0)).getUTCDate();
-      return { startDate: `${m}-01`, endDate: `${m}-${String(lastDay).padStart(2, '0')}` };
+      const [y, m] = todayStr.split('-').map(Number);
+      const monthStartStr = `${y}-${String(m).padStart(2, '0')}-01`;
+      return { startDate: monthStartStr, endDate: todayStr };
     }
     case 'custom': {
       return { startDate: extra.customStart || '', endDate: extra.customEnd || '' };
@@ -125,22 +158,45 @@ export function formatDateTime(dateStr) {
   if (!dateStr) return '—';
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '—';
-  return d.toLocaleString('en-IN', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Kolkata',
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-    hour12: false
-  });
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(d);
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  const y = parts.find((p) => p.type === 'year')?.value;
+  const hour = parts.find((p) => p.type === 'hour')?.value;
+  const min = parts.find((p) => p.type === 'minute')?.value;
+  return `${m}/${day}/${y}, ${hour}:${min}`;
 }
 
 export function formatDate(dateStr) {
   if (!dateStr) return '—';
+  if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) {
+    const [y, m, d] = dateStr.trim().split('-');
+    return `${m}/${d}/${y}`;
+  }
+  if (typeof dateStr === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(dateStr.trim())) {
+    const parts = dateStr.trim().split('/');
+    return `${parts[0].padStart(2, '0')}/${parts[1].padStart(2, '0')}/${parts[2]}`;
+  }
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('en-IN', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Kolkata',
-    day: '2-digit', month: '2-digit', year: 'numeric'
-  });
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  }).formatToParts(d);
+  const m = parts.find((p) => p.type === 'month')?.value;
+  const day = parts.find((p) => p.type === 'day')?.value;
+  const y = parts.find((p) => p.type === 'year')?.value;
+  return `${m}/${day}/${y}`;
 }
 
 export function isOverdue(dateStr, closureStatus = 'OPEN') {

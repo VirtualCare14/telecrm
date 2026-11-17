@@ -15,16 +15,17 @@ const { getNextSequence, formatLeadNumber } = require('../services/counterServic
 const { canAccessLead } = require('../utils/leadPermissions');
 const { classifyLead } = require('../utils/leadScoring');
 const { calculateHaversineDistance } = require('../utils/geoUtils');
+const { parseFollowUpDateTimeIST } = require('../utils/timeZoneHelper');
 
 exports.createLead = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
     const { organizationName, industry, organizationType, address, leadSource, remarks, sourceRemarks, contacts, currentOwner, leadTemperature, temperature } = req.body;
-    if (!organizationName || !leadSource || !contacts || !Array.isArray(contacts) || contacts.length === 0) {
+    if (!organizationName || !leadSource) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'Missing required lead or contact information' });
+      return res.status(400).json({ message: 'Missing required lead information (organizationName and leadSource are required)' });
     }
 
     // Generate lead number (atomic $inc in counterService prevents duplicates)
@@ -315,17 +316,22 @@ exports.createLead = async (req, res, next) => {
     const leadId = lead[0]._id;
 
     let primaryContactId = null;
-    for (let i = 0; i < contacts.length; i++) {
-      const c = contacts[i];
-      const cp = await ContactPerson.create([{
-        lead: leadId, name: c.name, designation: c.designation,
-        phone: c.phone, altPhone: c.altPhone, email: c.email,
-        isPrimary: i === 0, createdBy: req.userId
-      }], { session });
-      if (i === 0) primaryContactId = cp[0]._id;
+    if (contacts && Array.isArray(contacts) && contacts.length > 0) {
+      for (let i = 0; i < contacts.length; i++) {
+        const c = contacts[i];
+        if (!c || (!c.name && !c.phone)) continue;
+        const cp = await ContactPerson.create([{
+          lead: leadId, name: c.name || 'Primary Contact', designation: c.designation,
+          phone: c.phone || '—', altPhone: c.altPhone, email: c.email,
+          isPrimary: i === 0, createdBy: req.userId
+        }], { session });
+        if (i === 0) primaryContactId = cp[0]._id;
+      }
     }
 
-    await Lead.findByIdAndUpdate(leadId, { primaryContact: primaryContactId }, { session });
+    if (primaryContactId) {
+      await Lead.findByIdAndUpdate(leadId, { primaryContact: primaryContactId }, { session });
+    }
 
     await LeadActivity.create([{
       lead: leadId, action: 'Lead Created',
@@ -1200,23 +1206,9 @@ exports.rescheduleFollowUp = async (req, res, next) => {
       return res.status(400).json({ message: 'Follow-up date is required' });
     }
 
-    // Parse date and optional time into a Date object
-    let scheduledDate;
-    if (typeof followUpDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(followUpDate.trim())) {
-      const [y, m, d] = followUpDate.trim().split('-').map(Number);
-      let hours = 10;
-      let minutes = 0;
-      if (followUpTime && typeof followUpTime === 'string') {
-        const [th, tm] = followUpTime.trim().split(':').map(Number);
-        if (!isNaN(th)) hours = th;
-        if (!isNaN(tm)) minutes = tm;
-      }
-      scheduledDate = new Date(y, m - 1, d, hours, minutes, 0, 0);
-    } else {
-      scheduledDate = new Date(followUpDate);
-    }
-
-    if (isNaN(scheduledDate.getTime())) {
+    // Parse date and optional time strictly in Asia/Kolkata timezone (+05:30)
+    const scheduledDate = parseFollowUpDateTimeIST(followUpDate, followUpTime);
+    if (!scheduledDate || isNaN(scheduledDate.getTime())) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'Invalid follow-up date or time' });
@@ -1241,16 +1233,16 @@ exports.rescheduleFollowUp = async (req, res, next) => {
 
     if (existingCallWithFollowUp) {
       existingCallWithFollowUp.followUpAt = scheduledDate;
-      if (remarks && typeof remarks === 'string' && remarks.trim()) {
-        existingCallWithFollowUp.remark = remarks.trim();
-      }
+      // Do NOT overwrite existingCallWithFollowUp.remark to preserve original call history!
       await existingCallWithFollowUp.save({ session });
     }
+
+    const actionName = previousFollowUpAt ? 'Follow-up Rescheduled' : 'Follow-up Scheduled';
 
     // Log activity
     await LeadActivity.create([{
       lead: leadId,
-      action: 'Follow-up Rescheduled',
+      action: actionName,
       performedBy: req.userId,
       role: req.userRole,
       metadata: {
@@ -1458,7 +1450,7 @@ exports.createSalesFollowUp = async (req, res, next) => {
     }
 
     const assignedByName = req.user?.fullName || req.user?.username || 'Calling Agent';
-    const followUpDateVal = new Date(followUpDate);
+    const followUpDateVal = parseFollowUpDateTimeIST(followUpDate, followUpTime || '10:00') || new Date(followUpDate);
     const finalRemarks = (remarks || '').trim();
 
     const createdFollowUps = await FollowUp.create([{
@@ -1474,13 +1466,8 @@ exports.createSalesFollowUp = async (req, res, next) => {
 
     const followUpDoc = createdFollowUps[0];
 
-    // Compute target datetime for nextFollowUpAt
-    let targetDateTime = new Date(followUpDateVal);
-    if (followUpTime && typeof followUpTime === 'string') {
-      const [h, m] = followUpTime.split(':').map(Number);
-      targetDateTime.setHours(h || 10, m || 0, 0, 0);
-    }
-    lead.nextFollowUpAt = targetDateTime;
+    // target datetime for nextFollowUpAt (in Asia/Kolkata timezone)
+    lead.nextFollowUpAt = followUpDateVal;
 
     // Update latestSalesFollowUp on lead
     lead.latestSalesFollowUp = {
@@ -1581,13 +1568,18 @@ exports.updateSalesFollowUpStatus = async (req, res, next) => {
 
     followUp.status = targetStatus;
     followUp.remarks = finalRemarks;
-    if (followUpDate) followUp.followUpDate = new Date(followUpDate);
+    if (followUpDate) {
+      const parsedFuDate = parseFollowUpDateTimeIST(followUpDate, followUpTime || followUp.followUpTime);
+      if (parsedFuDate) followUp.followUpDate = parsedFuDate;
+    }
     if (followUpTime) followUp.followUpTime = followUpTime.trim();
     followUp.updatedBy = req.userId;
     await followUp.save({ session });
 
     if (['Done', 'Completed'].includes(targetStatus)) {
       lead.nextFollowUpAt = null;
+    } else if (targetStatus === 'Planned') {
+      lead.nextFollowUpAt = followUp.followUpDate;
     }
 
     // Update latestSalesFollowUp on lead
